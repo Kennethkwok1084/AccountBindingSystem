@@ -1,0 +1,7 @@
+Flask
+SQLAlchemy
+pandas
+openpyxl
+XlsxWriter
+APScheduler
+pytest
