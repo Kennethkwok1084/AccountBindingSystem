@@ -1,10 +1,13 @@
-from flask import Blueprint, jsonify, request
-from werkzeug.utils import secure_filename
-from openpyxl import load_workbook
-from .models import Account, BindingLog
-from . import db
-from .utils import add_log
 from datetime import datetime
+
+from flask import Blueprint, jsonify, request
+from openpyxl import load_workbook
+from tasks.release import auto_release
+from werkzeug.utils import secure_filename
+
+from . import db
+from .models import Account, BindingLog
+from .utils import add_log
 
 bp = Blueprint("api", __name__)
 
@@ -70,3 +73,12 @@ def list_accounts():
         for a in accounts
     ]
     return jsonify(data)
+
+
+@bp.route("/auto-release", methods=["POST"])
+def trigger_auto_release():
+    days = 32
+    if request.is_json:
+        days = int(request.get_json().get("days", 32))
+    released = auto_release(days)
+    return jsonify({"released": released})
