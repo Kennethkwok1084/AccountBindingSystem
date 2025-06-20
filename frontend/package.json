@@ -9,14 +9,15 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "vue": "^3.4.21",
-    "element-plus": "^2.5.1"
+    "element-plus": "^2.5.1",
+    "vue": "^3.4.21"
   },
   "devDependencies": {
-    "vite": "^4.4.9",
-    "vitest": "^0.34.6",
+    "@vitejs/plugin-vue": "^4.5.2",
     "eslint": "^9.0.0",
     "eslint-plugin-vue": "^10.2.0",
-    "prettier": "^3.2.5"
+    "prettier": "^3.2.5",
+    "vite": "^4.4.9",
+    "vitest": "^0.34.6"
   }
 }

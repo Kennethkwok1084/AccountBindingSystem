@@ -1,5 +1,9 @@
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
+import pymysql
+
+# 将PyMySQL注册为MySQLdb的替代品
+pymysql.install_as_MySQLdb()
 
 db = SQLAlchemy()
 
