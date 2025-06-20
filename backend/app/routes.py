@@ -62,7 +62,29 @@ def bind_account():
 
 @bp.route("/accounts", methods=["GET"])
 def list_accounts():
-    accounts = Account.query.all()
+    """Return account list with optional filters."""
+    query = Account.query
+
+    bound = request.args.get("bound")
+    if bound is not None:
+        if bound.lower() == "true":
+            query = query.filter_by(is_bound=True)
+        elif bound.lower() == "false":
+            query = query.filter_by(is_bound=False)
+
+    q = request.args.get("q")
+    if q:
+        pattern = f"%{q}%"
+        from sqlalchemy import or_
+
+        query = query.filter(
+            or_(Account.username.ilike(pattern), Account.student_id.ilike(pattern))
+        )
+
+    total = query.count()
+    page = int(request.args.get("page", 1))
+    size = int(request.args.get("size", 10))
+    accounts = query.order_by(Account.id).offset((page - 1) * size).limit(size).all()
     data = [
         {
             "username": a.username,
@@ -72,7 +94,7 @@ def list_accounts():
         }
         for a in accounts
     ]
-    return jsonify(data)
+    return jsonify({"total": total, "items": data})
 
 
 @bp.route("/auto-release", methods=["POST"])
