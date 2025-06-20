@@ -67,7 +67,7 @@ account-manager/
 - 前端测试工具：`vitest`
 - 格式化工具：
   - Python 使用 `black` + `isort`
-  - Vue 使用 `prettier` + `eslint`
+  - Vue 使用 `prettier` + `eslint`（ESLint v9 开始默认不再支持 .eslintrc 格式，改为要求使用 eslint.config.js 这种新格式✅）
 
 ---
 
