@@ -1,0 +1,19 @@
+{
+  "name": "cnams-frontend",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "vue": "^3.4.21",
+    "element-plus": "^2.5.1"
+  },
+  "devDependencies": {
+    "vite": "^4.4.9",
+    "vitest": "^0.34.6",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.5"
+  }
+}
