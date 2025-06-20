@@ -8,51 +8,72 @@
 
 ---
 
-## 二、功能模块说明
+## 二、模块拆解
+
+下表展示了系统的主要功能模块及其拆解步骤，后续实现时可逐项对照：
 
 ### 1. 账号导入模块
 
-- 后端使用 `openpyxl` 解析上传的 Excel 表（第一行为表头）
-- 账号、密码导入至 `accounts` 表，已存在账号不重复导入
-- 前端通过 `ExcelUpload.vue` 实现上传组件，支持拖拽上传
+1. 实现接口 `/api/accounts/import`，使用 `openpyxl` 解析上传的 Excel（首行表头）
+2. 将账号、密码写入 `accounts` 表，已存在账号跳过导入
+3. 编写单元测试验证导入结果
+4. 开发 `ExcelUpload.vue` 组件，支持拖拽上传
 
 ### 2. 学号绑定模块
 
-- 前端填写账号 + 学号，POST 到绑定接口
-- 后端检查该账号未绑定，执行更新字段：
-  - `is_bound = True`
-  - `student_id = xxx`
-  - `bind_time = 当前时间`
-- 绑定成功后调用日志模块记录日志
+1. 前端填写账号与学号，POST 到 `/api/accounts/bind`
+2. 后端检查账号未被绑定，更新字段：
+   - `is_bound = True`
+   - `student_id = 学号`
+   - `bind_time = 当前时间`
+3. 写入 `binding_logs` 表记录操作人及时间
+4. 为成功与失败场景编写测试用例
 
 ### 3. 自动释放模块（后台任务）
 
-- 每次页面访问或每日调度执行
-- 遍历 `accounts` 表中 `is_bound = True` 且 `bind_time` 超过 32 天的数据
-- 自动将其：
-  - `is_bound = False`
-  - `student_id = NULL`
-  - `bind_time = NULL`
+1. 每日调度或手动触发 `/api/auto-release` 接口
+2. 查询 `accounts` 表中 `is_bound=True` 且 `bind_time` 超过 32 天的记录
+3. 将其重置为未绑定状态：
+   - `is_bound = False`
+   - `student_id = NULL`
+   - `bind_time = NULL`
+4. 在 `binding_logs` 表记录 `auto_release` 动作
+5. 编写任务脚本并补充测试
 
 ### 4. 状态查看模块
 
-- 使用 Element Plus 的 `el-table` 实现数据展示
-- 支持按绑定状态筛选、分页、模糊搜索
-- 数据由 `/api/accounts` 返回 JSON 渲染前端
+1. 在前端使用 Element Plus 的 `el-table` 展示账号列表
+2. 支持按绑定状态筛选、分页与模糊搜索
+3. 列表数据由 `/api/accounts` 返回的 JSON 渲染
+4. 编写接口单元测试与前端页面测试
 
 ### 5. 日志记录模块
 
-- 所有绑定操作由后端统一调用日志插入逻辑
-- 日志记录信息：账号、学号、时间、操作人
-- 展示页支持时间区间搜索、导出日志
+1. 在后端封装统一的日志插入函数
+2. 记录账号、学号、时间、操作人及动作类型
+3. 提供日志查询接口和导出功能
+4. 开发前端日志列表页，可按时间区间搜索
 
 ### 6. 数据导出模块
 
-- 后端调用 `pandas` 生成 Excel 表格
-- 提供 `/export/accounts` 与 `/export/logs` 下载接口
-- 文件命名自动含时间戳
+1. 后端使用 `pandas` 生成 Excel 表格
+2. 提供 `/export/accounts` 与 `/export/logs` 下载接口
+3. 文件命名自动带时间戳
+4. 编写导出相关测试
 
 ---
+
+### 7. 模块进度追踪
+
+| 模块 | 状态 | 备注 |
+| ---- | ---- | ---- |
+| 项目初始化 | ✅ 已完成，`pytest` 与 `vitest` 均通过 | 基础目录结构建立 |
+| 账号导入模块 | ⬜ 未开始 | |
+| 学号绑定模块 | ⬜ 未开始 | |
+| 自动释放模块 | 🚧 进行中 | 已有 `tasks/release.py` 脚本 |
+| 状态查看模块 | ⬜ 未开始 | |
+| 日志记录模块 | ⬜ 未开始 | |
+| 数据导出模块 | ⬜ 未开始 | |
 
 ## 三、接口定义（节选）
 
