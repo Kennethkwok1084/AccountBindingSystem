@@ -43,6 +43,7 @@ frontend/
 - 后端：Flask + SQLAlchemy
 - 数据库：MySQL
 - 前端：Vue3 + Element Plus
+- 代码规范：使用 ESLint v9，配置文件为 `eslint.config.js`
 - 解析导入：openpyxl
 - 导出支持：pandas + xlsxwriter
 
