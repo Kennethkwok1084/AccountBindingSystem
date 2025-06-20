@@ -17,6 +17,10 @@
         <el-option label="已绑定" :value="true" />
         <el-option label="未绑定" :value="false" />
       </el-select>
+      <el-button @click="exportAccounts">导出</el-button>
+      <el-button style="margin-left: 8px" @click="autoRelease"
+        >自动释放</el-button
+      >
     </div>
     <el-table :data="accounts" style="width: 100%">
       <el-table-column prop="username" label="账号" />
@@ -37,7 +41,11 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { ElMessage } from "element-plus";
-import { fetchAccounts } from "../api/accounts";
+import {
+  fetchAccounts,
+  exportAccounts as exportAccApi,
+  triggerAutoRelease,
+} from "../api/accounts";
 
 const accounts = ref([]);
 const total = ref(0);
@@ -62,4 +70,18 @@ async function load() {
 }
 
 onMounted(load);
+
+function exportAccounts() {
+  exportAccApi();
+}
+
+async function autoRelease() {
+  try {
+    const { released } = await triggerAutoRelease();
+    ElMessage.success(`释放 ${released} 个账号`);
+    load();
+  } catch {
+    ElMessage.error("操作失败");
+  }
+}
 </script>

@@ -10,6 +10,9 @@ export default [
       globals: {
         fetch: "readonly",
         URLSearchParams: "readonly",
+        FormData: "readonly",
+        Blob: "readonly",
+        window: "readonly",
       },
     },
     plugins: { vue },
