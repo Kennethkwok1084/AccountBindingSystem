@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from flask import Blueprint, jsonify, request
+import pandas as pd
+from flask import Blueprint, jsonify, request, send_file
 from openpyxl import load_workbook
 from tasks.release import auto_release
 from werkzeug.utils import secure_filename
@@ -104,3 +105,64 @@ def trigger_auto_release():
         days = int(request.get_json().get("days", 32))
     released = auto_release(days)
     return jsonify({"released": released})
+
+
+@bp.route("/logs", methods=["GET"])
+def list_logs():
+    """Return binding logs with optional date filters."""
+    query = BindingLog.query
+
+    start = request.args.get("start")
+    if start:
+        query = query.filter(BindingLog.bind_time >= datetime.fromisoformat(start))
+    end = request.args.get("end")
+    if end:
+        query = query.filter(BindingLog.bind_time <= datetime.fromisoformat(end))
+
+    total = query.count()
+    page = int(request.args.get("page", 1))
+    size = int(request.args.get("size", 10))
+    logs = (
+        query.order_by(BindingLog.id.desc()).offset((page - 1) * size).limit(size).all()
+    )
+    data = [
+        {
+            "username": l.username,
+            "student_id": l.student_id,
+            "bind_time": l.bind_time.isoformat(),
+            "operator": l.operator,
+            "action": l.action,
+        }
+        for l in logs
+    ]
+    return jsonify({"total": total, "items": data})
+
+
+@bp.route("/export/logs", methods=["GET"])
+def export_logs():
+    """Export logs as an Excel file."""
+    logs = BindingLog.query.order_by(BindingLog.id).all()
+    df = pd.DataFrame(
+        [
+            {
+                "username": l.username,
+                "student_id": l.student_id,
+                "bind_time": l.bind_time,
+                "operator": l.operator,
+                "action": l.action,
+            }
+            for l in logs
+        ]
+    )
+    from io import BytesIO
+
+    output = BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
+    filename = f"logs_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.xlsx"
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )

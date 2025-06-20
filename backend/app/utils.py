@@ -1,8 +1,9 @@
 """Utility helpers."""
 
-from .models import BindingLog
-from . import db
 from datetime import datetime
+
+from . import db
+from .models import BindingLog
 
 
 def add_log(
