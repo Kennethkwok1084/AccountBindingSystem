@@ -166,3 +166,34 @@ def export_logs():
         download_name=filename,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+@bp.route("/export/accounts", methods=["GET"])
+def export_accounts():
+    """Export accounts as an Excel file."""
+    accounts = Account.query.order_by(Account.id).all()
+    df = pd.DataFrame(
+        [
+            {
+                "username": a.username,
+                "password": a.password,
+                "is_bound": a.is_bound,
+                "student_id": a.student_id,
+                "bind_time": a.bind_time,
+                "create_time": a.create_time,
+            }
+            for a in accounts
+        ]
+    )
+    from io import BytesIO
+
+    output = BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
+    filename = f"accounts_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.xlsx"
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
