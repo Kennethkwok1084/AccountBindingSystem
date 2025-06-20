@@ -10,6 +10,7 @@
         style="margin-right: 8px"
       />
       <el-button @click="load">查询</el-button>
+      <el-button style="margin-left: 8px" @click="exportLogs">导出</el-button>
     </div>
     <el-table :data="logs" style="width: 100%">
       <el-table-column prop="username" label="账号" />
@@ -30,7 +31,7 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { ElMessage } from "element-plus";
-import { fetchLogs } from "../api/logs";
+import { fetchLogs, exportLogs as exportLogsApi } from "../api/logs";
 
 const logs = ref([]);
 const total = ref(0);
@@ -53,4 +54,8 @@ async function load() {
 }
 
 onMounted(load);
+
+function exportLogs() {
+  exportLogsApi();
+}
 </script>

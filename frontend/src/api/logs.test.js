@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchLogs } from "./logs";
+import { fetchLogs, exportLogs } from "./logs";
 
 describe("fetchLogs", () => {
   it("calls backend", async () => {
@@ -11,6 +11,16 @@ describe("fetchLogs", () => {
     const data = await fetchLogs({ page: 1 });
     expect(fetch).toHaveBeenCalledWith("/api/logs?page=1");
     expect(data.total).toBe(0);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("exportLogs", () => {
+  it("opens window", () => {
+    const open = vi.fn();
+    vi.stubGlobal("window", { open });
+    exportLogs();
+    expect(open).toHaveBeenCalledWith("/api/export/logs", "_blank");
     vi.unstubAllGlobals();
   });
 });

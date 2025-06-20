@@ -6,3 +6,7 @@ export async function fetchLogs(params = {}) {
   }
   return await resp.json();
 }
+
+export function exportLogs() {
+  window.open("/api/export/logs", "_blank");
+}
