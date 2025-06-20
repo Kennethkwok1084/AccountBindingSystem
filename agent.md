@@ -87,6 +87,7 @@ account-manager/
 - 请优先关注 `backend/models.py`、`backend/routes/*.py` 和 `frontend/views/Bind.vue`
 - 建议在 PR 中说明所影响的数据库结构、测试覆盖内容
 - 若需要扩展字段，请通过 Alembic 生成迁移脚本，不直接改表结构
+- 请先将develop.md编写成需要实现的模块步骤，并且每次编写的时候标记完成的模块
 
 ---
 
