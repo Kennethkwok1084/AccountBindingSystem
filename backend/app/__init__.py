@@ -11,8 +11,9 @@ def create_app() -> Flask:
     db.init_app(app)
 
     with app.app_context():
-        from . import routes  # noqa: F401
+        from . import routes
 
+        app.register_blueprint(routes.bp)
         db.create_all()
 
     return app
