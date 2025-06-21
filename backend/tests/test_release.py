@@ -1,13 +1,22 @@
 import sys
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def _set_db(path):
+    os.environ["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{path}"
+
+
 from app import create_app, db
 from app.models import Account, BindingLog
 
 
 def test_auto_release(tmp_path):
+    db_path = tmp_path / "app.db"
+    _set_db(db_path)
     app = create_app()
     with app.app_context():
         db.drop_all()

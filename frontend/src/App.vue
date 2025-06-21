@@ -14,6 +14,9 @@
       <el-tab-pane label="日志记录" name="logs">
         <LogList />
       </el-tab-pane>
+      <el-tab-pane label="导入日志" name="importLogs">
+        <ImportLogs />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -24,6 +27,7 @@ import AccountList from "./views/AccountList.vue";
 import LogList from "./views/LogList.vue";
 import Bind from "./views/BindAccount.vue";
 import Import from "./views/ImportAccounts.vue";
+import ImportLogs from "./views/ImportLogs.vue";
 
 const tab = ref("bind");
 </script>
