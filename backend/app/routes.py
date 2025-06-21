@@ -3,6 +3,7 @@ from datetime import datetime
 import pandas as pd
 from flask import Blueprint, jsonify, request, send_file
 from openpyxl import load_workbook
+import re
 from tasks.release import auto_release
 from werkzeug.utils import secure_filename
 
@@ -29,11 +30,15 @@ def import_accounts():
     ws = wb.active
     imported = 0
     for row in ws.iter_rows(min_row=2, values_only=True):
-        username, password = row[:2]
+        bound_student, username, password, *_ = row
         if not username or not password:
             continue
         if not Account.query.filter_by(username=username).first():
             account = Account(username=username, password=password)
+            if bound_student:
+                account.is_bound = True
+                account.student_id = str(bound_student)
+                account.bind_time = datetime.utcnow()
             db.session.add(account)
             imported += 1
     db.session.commit()
@@ -166,6 +171,45 @@ def export_logs():
         download_name=filename,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+@bp.route("/logs/import", methods=["POST"])
+def import_logs():
+    """Import historical binding logs from Excel."""
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "no file"}), 400
+
+    filename = secure_filename(file.filename)
+    m = re.search(r"(\d{8})", filename)
+    bind_time = datetime.utcnow()
+    if m:
+        digits = m.group(1)
+        year = datetime.utcnow().year
+        month = int(digits[0:2])
+        day = int(digits[2:4])
+        hour = int(digits[4:6])
+        minute = int(digits[6:8])
+        bind_time = datetime(year, month, day, hour, minute)
+
+    wb = load_workbook(file)
+    ws = wb.active
+    imported = 0
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        user_account, mobile_account, *_ = row
+        if not user_account or not mobile_account:
+            continue
+        log = BindingLog(
+            username=str(mobile_account),
+            student_id=str(user_account),
+            bind_time=bind_time,
+            operator="import",
+            action="bind",
+        )
+        db.session.add(log)
+        imported += 1
+    db.session.commit()
+    return jsonify({"imported": imported})
 
 
 @bp.route("/export/accounts", methods=["GET"])
