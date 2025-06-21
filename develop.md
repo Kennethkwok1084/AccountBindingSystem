@@ -74,6 +74,7 @@
 | 状态查看模块 | ✅ 已完成                              | `/accounts` 列表接口与前端页面 |
 | 日志记录模块 | ✅ 已完成                              | `/logs` 查询与导出接口已实现   |
 | 数据导出模块 | ✅ 已完成                              |
+| 历史日志导入模块 | ✅ 已完成                              | `/logs/import` 接口与前端页面 |
 
 ## 三、接口定义（节选）
 
@@ -86,6 +87,7 @@
 | `/api/auto-release`    | POST | 手动触发账号释放 |
 | `/export/accounts`     | GET  | 导出账号 Excel   |
 | `/export/logs`         | GET  | 导出日志 Excel   |
+| `/api/logs/import`     | POST | 导入历史绑定记录 |
 
 ---
 
@@ -94,7 +96,7 @@
 - 所有绑定操作必须校验账号状态，避免重复绑定
 - 导入功能必须支持重复上传同一文件不出错
 - 日志中操作人默认为 system，后续可拓展为用户系统
-- Excel 模板字段固定为 `username, password`
+- Excel 模板字段调整为 `绑定账户, 账号, 密码, 备注`
 - 前端代码需使用 ESLint v9，配置文件为 `eslint.config.js`
 
 ---
