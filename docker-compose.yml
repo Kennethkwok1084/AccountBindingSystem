@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: abs_postgres
+    environment:
+      POSTGRES_DB: ${ABS_DB_NAME:?ABS_DB_NAME is required}
+      POSTGRES_USER: ${ABS_DB_USER:?ABS_DB_USER is required}
+      POSTGRES_PASSWORD: ${ABS_DB_PASSWORD:?ABS_DB_PASSWORD is required}
+      TZ: Asia/Shanghai
+    ports:
+      - "${ABS_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ABS_DB_USER} -d ${ABS_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: abs_backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD}@postgres:5432/${ABS_DB_NAME}
+      SECRET_KEY: ${ABS_SECRET_KEY:?ABS_SECRET_KEY is required}
+      SESSION_COOKIE_SECURE: ${ABS_SESSION_COOKIE_SECURE:-true}
+      STORAGE_ROOT: /app/storage
+      DEFAULT_ADMIN_USERNAME: ${ABS_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${ABS_ADMIN_PASSWORD:?ABS_ADMIN_PASSWORD is required}
+      TZ: Asia/Shanghai
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - backend_storage:/app/storage
+    command: >
+      sh -c "flask --app wsgi:app init-db &&
+             flask --app wsgi:app seed-admin &&
+             gunicorn --bind 0.0.0.0:5000 wsgi:app"
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: abs_scheduler
+    environment:
+      DATABASE_URL: postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD}@postgres:5432/${ABS_DB_NAME}
+      SECRET_KEY: ${ABS_SECRET_KEY:?ABS_SECRET_KEY is required}
+      STORAGE_ROOT: /app/storage
+      TZ: Asia/Shanghai
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - backend_storage:/app/storage
+    command: ["python", "scheduler_runner.py"]
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: .
+      dockerfile: deploy/nginx/Dockerfile
+    container_name: abs_nginx
+    depends_on:
+      - backend
+    ports:
+      - "${ABS_HTTP_PORT:-8080}:80"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  backend_storage:
