@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from ..extensions import db
 from ..models import AccountBatch, AlertRecord, BindingHistory, CurrentBinding, MobileAccount, SchedulerRunLog
+from .account_service import allocatable_batch_condition
 from .audit_service import _account_snapshot, _binding_snapshot, operation_trace, record_entity_change, record_operation_event
 from .config_service import get_config_value
 from .date_service import utcnow
@@ -23,7 +24,7 @@ def record_scheduler_run(job_name: str, status: str, message: str) -> SchedulerR
 def run_batch_expire_warning() -> str:
     with operation_trace("batch_expire_warning", source="scheduler"):
         today = date.today()
-        batches = AccountBatch.query.filter(AccountBatch.status == "active", AccountBatch.expire_at.is_not(None)).all()
+        batches = AccountBatch.query.filter(allocatable_batch_condition(today), AccountBatch.expire_at.is_not(None)).all()
         count = 0
         for batch in batches:
             warn_days = batch.warn_days or int(get_config_value("batch.warn_days_default", 1) or 1)
@@ -100,7 +101,11 @@ def run_binding_expire_release() -> str:
 def run_inventory_alert_scan() -> str:
     with operation_trace("inventory_alert_scan", source="scheduler"):
         threshold = int(get_config_value("inventory.low_stock_threshold", 50) or 50)
-        available_count = MobileAccount.query.filter_by(status="available").count()
+        available_count = (
+            MobileAccount.query.join(AccountBatch)
+            .filter(MobileAccount.status == "available", allocatable_batch_condition())
+            .count()
+        )
         if available_count < threshold and not AlertRecord.query.filter_by(type="inventory_low", is_resolved=False).first():
             db.session.add(
                 AlertRecord(

@@ -10,6 +10,7 @@ from flask import has_request_context, request
 from ..auth import current_user
 from ..extensions import db
 from ..models import AuditLog, EntityChangeLog, OperationAuditEvent
+from .syslog_service import emit_syslog
 
 _trace_ctx = threading.local()
 
@@ -68,6 +69,17 @@ def write_audit(
     )
     db.session.add(log)
     db.session.flush()
+    emit_syslog(
+        "audit_log",
+        {
+            "audit_id": log.id,
+            "action": action,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "operator_id": resolved_operator_id,
+            "detail": detail or {},
+        },
+    )
 
 
 def record_operation_event(

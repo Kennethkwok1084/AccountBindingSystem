@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from datetime import date
 
 from flask import Blueprint, current_app, request, send_file
 import pandas as pd
@@ -10,12 +11,26 @@ from ..extensions import db
 from ..models import AccountBatch, ImportJobError, MobileAccount
 from ..responses import error, success
 from ..security import require_csrf, require_session
-from ..services.account_service import import_mobile_accounts, query_mobile_accounts
+from ..services.account_service import (
+    allocatable_batch_condition,
+    batch_effective_status,
+    import_mobile_accounts,
+    query_mobile_accounts,
+)
 from ..services.audit_service import write_audit
 from ..services.date_service import normalize_date
+from ..services.export_service import create_tabular_export
 
 
 bp = Blueprint("accounts", __name__)
+
+
+ACCOUNT_STATUS_LABEL = {
+    "available": "可用",
+    "assigned": "已分配",
+    "disabled": "禁用",
+    "expired": "到期",
+}
 
 
 @bp.post("/mobile-accounts/import")
@@ -102,6 +117,53 @@ def mobile_accounts():
             "page": result["page"],
             "page_size": result["page_size"],
         }
+    )
+
+
+@bp.post("/mobile-accounts/export")
+@require_session
+@require_csrf
+def export_mobile_accounts():
+    payload = request.get_json(silent=True) or {}
+    result = query_mobile_accounts(
+        payload.get("status"),
+        payload.get("batch_code"),
+        payload.get("account"),
+        payload.get("batch_type"),
+        payload.get("sort_by", "account"),
+        payload.get("sort_order", "asc"),
+        export_all=True,
+    )
+    items = result["items"]
+    if not items:
+        return error("EXP422", "当前筛选条件下没有可导出的账号台账数据", status=422)
+
+    export_job = create_tabular_export(
+        None,
+        [
+            {
+                "账号": item.account,
+                "状态": ACCOUNT_STATUS_LABEL.get(item.status, item.status),
+                "批次编码": item.batch.batch_code,
+                "批次类型": item.batch.batch_type,
+                "批次状态": batch_effective_status(item.batch),
+                "批次到期日": item.batch.expire_at.isoformat() if item.batch.expire_at else "",
+                "最近分配时间": item.last_assigned_at.isoformat(sep=" ") if item.last_assigned_at else "",
+            }
+            for item in items
+        ],
+        filename_prefix="账号台账",
+        columns=["账号", "状态", "批次编码", "批次类型", "批次状态", "批次到期日", "最近分配时间"],
+    )
+    return success(
+        {
+            "export_job": {
+                "id": export_job.id,
+                "filename": export_job.filename,
+                "row_count": export_job.row_count,
+            }
+        },
+        status=201,
     )
 
 
@@ -201,8 +263,14 @@ def list_batches():
     page_size = max(1, min(int(request.args.get("page_size", 50) or 50), 200))
 
     query = AccountBatch.query
+    today = date.today()
     if status_filter:
-        query = query.filter(AccountBatch.status == status_filter)
+        if status_filter == "active":
+            query = query.filter(allocatable_batch_condition(today))
+        elif status_filter == "expired":
+            query = query.filter(AccountBatch.expire_at.is_not(None), AccountBatch.expire_at < today)
+        else:
+            query = query.filter(AccountBatch.status == status_filter)
     if batch_type:
         query = query.filter(AccountBatch.batch_type == batch_type)
     if keyword:
@@ -241,7 +309,8 @@ def list_batches():
                     "priority": item.priority,
                     "warn_days": item.warn_days,
                     "expire_at": item.expire_at.isoformat() if item.expire_at else None,
-                    "status": item.status,
+                    "status": batch_effective_status(item, today),
+                    "raw_status": item.status,
                     "remark": item.remark,
                 }
                 for item in items
@@ -331,7 +400,8 @@ def update_batch(batch_id: int):
             "priority": batch.priority,
             "warn_days": batch.warn_days,
             "expire_at": batch.expire_at.isoformat() if batch.expire_at else None,
-            "status": batch.status,
+            "status": batch_effective_status(batch),
+            "raw_status": batch.status,
             "remark": batch.remark,
         }
     )

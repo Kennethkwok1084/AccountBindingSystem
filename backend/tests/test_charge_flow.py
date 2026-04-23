@@ -143,6 +143,52 @@ def test_charge_preview_supports_chinese_headers_and_optional_name(client, auth_
     assert preview.json["data"]["to_allocate_count"] == 1
 
 
+def test_charge_preview_skips_expired_batches_for_allocation(client, auth_headers):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {"account": "yd-expired", "batch_code": "202401"},
+                        {"account": "yd-active", "batch_code": "209912"},
+                    ]
+                ),
+                "accounts.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    preview = client.post(
+        "/api/v1/charge-batches/preview",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "student_no": "2023009012",
+                            "name": "学生C",
+                            "charge_time": datetime(2026, 4, 20, 9, 0, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        }
+                    ]
+                ),
+                "charge-active-only.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert preview.status_code == 201
+    allocate_row = next(row for row in preview.json["data"]["details"] if row["action_plan"] == "allocate")
+    account = db.session.get(MobileAccount, allocate_row["new_mobile_account_id"])
+    assert account.account == "yd-active"
+
+
 def test_charge_preview_returns_import_errors_for_partial_valid_rows(client, auth_headers):
     client.post(
         "/api/v1/mobile-accounts/import",

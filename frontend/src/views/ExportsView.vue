@@ -44,8 +44,10 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
+import { useRoute } from "vue-router";
 import { apiFetch } from "../services/api";
 
+const route = useRoute();
 const exports = ref([]);
 const filters = reactive({ keyword: "" });
 const dateRange = ref([]);
@@ -111,5 +113,10 @@ async function load() {
   pageSize.value = payload.data.page_size || 20;
 }
 
-onMounted(load);
+onMounted(() => {
+  if (route.query.keyword) {
+    filters.keyword = String(route.query.keyword);
+  }
+  load();
+});
 </script>

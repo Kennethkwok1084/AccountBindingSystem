@@ -2,7 +2,10 @@
   <a-card :bordered="false">
     <template #title>审计日志</template>
     <template #extra>
-      <a-button @click="load">刷新</a-button>
+      <a-space>
+        <a-button :loading="exporting" @click="exportLogs">导出 Excel</a-button>
+        <a-button @click="load">刷新</a-button>
+      </a-space>
     </template>
 
     <a-form layout="inline" style="margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
@@ -33,6 +36,15 @@
       </a-form-item>
     </a-form>
 
+    <a-alert v-if="exportState" type="success" message="审计日志导出已生成" show-icon style="margin-bottom: 12px;">
+      <template #description>
+        已生成文件 {{ exportState.filename }}，共 {{ exportState.rowCount }} 条。请前往导出记录下载。
+        <div style="margin-top: 12px;">
+          <a-button type="primary" size="small" @click="goToExports">前往导出记录</a-button>
+        </div>
+      </template>
+    </a-alert>
+
     <a-table
       :columns="columns"
       :data-source="items"
@@ -52,8 +64,10 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
 import { apiFetch } from "../services/api";
 
+const router = useRouter();
 const filters = reactive({ keyword: "", action: "", resourceType: "", resourceId: "" });
 const dateRange = ref([]);
 const items = ref([]);
@@ -62,6 +76,8 @@ const page = ref(1);
 const pageSize = ref(20);
 const sortBy = ref("created_at");
 const sortOrder = ref("desc");
+const exporting = ref(false);
+const exportState = ref(null);
 
 const pagination = computed(() => ({
   current: page.value,
@@ -130,6 +146,36 @@ async function load() {
   total.value = payload.data.total || 0;
   page.value = payload.data.page || 1;
   pageSize.value = payload.data.page_size || 20;
+}
+
+async function exportLogs() {
+  exporting.value = true;
+  exportState.value = null;
+  try {
+    const payload = await apiFetch("/api/v1/audit-logs/export", {
+      method: "POST",
+      body: JSON.stringify({
+        keyword: filters.keyword,
+        action: filters.action,
+        resource_type: filters.resourceType,
+        resource_id: filters.resourceId,
+        created_from: dateRange.value?.[0] || "",
+        created_to: dateRange.value?.[1] || "",
+        sort_by: sortBy.value,
+        sort_order: sortOrder.value,
+      }),
+    });
+    exportState.value = {
+      filename: payload.data.export_job.filename,
+      rowCount: payload.data.export_job.row_count,
+    };
+  } finally {
+    exporting.value = false;
+  }
+}
+
+function goToExports() {
+  router.push({ path: "/exports", query: { keyword: exportState.value?.filename || "" } });
 }
 
 onMounted(load);

@@ -2,7 +2,10 @@
   <a-card :bordered="false">
     <template #title>账号台账</template>
     <template #extra>
-      <a-button :loading="isAccountsLoading" @click="loadAccounts">刷新</a-button>
+      <a-space>
+        <a-button :loading="exporting" @click="exportAccounts">导出 Excel</a-button>
+        <a-button :loading="isAccountsLoading" @click="loadAccounts">刷新</a-button>
+      </a-space>
     </template>
 
     <a-form layout="inline" style="margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
@@ -30,6 +33,14 @@
     </a-form>
 
     <a-alert v-if="pageMessage" :type="pageMessageType === 'error' ? 'error' : 'info'" :message="pageMessage" show-icon style="margin-bottom: 12px;" />
+    <a-alert v-if="exportState" type="success" message="账号台账导出已生成" show-icon style="margin-bottom: 12px;">
+      <template #description>
+        已生成文件 {{ exportState.filename }}，共 {{ exportState.rowCount }} 条。请前往导出记录下载。
+        <div style="margin-top: 12px;">
+          <a-button type="primary" size="small" @click="goToExports">前往导出记录</a-button>
+        </div>
+      </template>
+    </a-alert>
 
     <a-table
       :columns="columns"
@@ -77,9 +88,18 @@
             </a-select-option>
           </a-select>
           <a-button :loading="isHistoryLoading" @click="loadHistory">筛选</a-button>
+          <a-button :loading="historyExporting" @click="exportHistory">导出历史</a-button>
         </a-space>
 
         <a-alert v-if="historyMessage" :type="historyMessageType === 'error' ? 'error' : 'info'" :message="historyMessage" show-icon style="margin-bottom: 12px;" />
+        <a-alert v-if="historyExportState" type="success" message="账号历史导出已生成" show-icon style="margin-bottom: 12px;">
+          <template #description>
+            已生成文件 {{ historyExportState.filename }}，共 {{ historyExportState.rowCount }} 条。请前往导出记录下载。
+            <div style="margin-top: 12px;">
+              <a-button type="primary" size="small" @click="goToHistoryExports">前往导出记录</a-button>
+            </div>
+          </template>
+        </a-alert>
 
         <a-table
           :columns="historyColumns"
@@ -97,9 +117,11 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
 import { apiFetch } from "../services/api";
 import { ACTION_TYPE_OPTIONS, getActionTypeLabel } from "../utils/ledgerActionLabels";
 
+const router = useRouter();
 const STATUS_COLOR = { available: "success", assigned: "processing", disabled: "default", expired: "warning" };
 const STATUS_LABEL = { available: "可用", assigned: "已分配", disabled: "禁用", expired: "到期" };
 
@@ -126,6 +148,10 @@ const pageMessage = ref("");
 const pageMessageType = ref("info");
 const historyMessage = ref("");
 const historyMessageType = ref("info");
+const exporting = ref(false);
+const exportState = ref(null);
+const historyExporting = ref(false);
+const historyExportState = ref(null);
 
 const pagination = computed(() => ({
   current: accountsPage.value,
@@ -189,6 +215,7 @@ function closeDetails() {
   selectedAccount.value = "";
   historyFilters.actionType = "";
   historyMessage.value = "";
+  historyExportState.value = null;
 }
 
 async function loadAccounts() {
@@ -242,6 +269,68 @@ async function loadHistory() {
   } finally {
     isHistoryLoading.value = false;
   }
+}
+
+async function exportHistory() {
+  if (!selectedAccount.value) return;
+  historyMessage.value = "";
+  historyExportState.value = null;
+  historyExporting.value = true;
+  try {
+    const encodedAccount = encodeURIComponent(selectedAccount.value);
+    const payload = await apiFetch(`/api/v1/ledger/accounts/${encodedAccount}/export`, {
+      method: "POST",
+      body: JSON.stringify({
+        action_type: historyFilters.actionType || null,
+        sort_by: historySortBy.value,
+        sort_order: historySortOrder.value,
+      }),
+    });
+    historyExportState.value = {
+      filename: payload.data.export_job.filename,
+      rowCount: payload.data.export_job.row_count,
+    };
+  } catch (error) {
+    historyMessage.value = error.message || "账号历史导出失败";
+    historyMessageType.value = "error";
+  } finally {
+    historyExporting.value = false;
+  }
+}
+
+async function exportAccounts() {
+  pageMessage.value = "";
+  exportState.value = null;
+  exporting.value = true;
+  try {
+    const payload = await apiFetch("/api/v1/mobile-accounts/export", {
+      method: "POST",
+      body: JSON.stringify({
+        account: filters.account,
+        status: filters.status,
+        batch_code: filters.batchCode,
+        sort_by: sortBy.value,
+        sort_order: sortOrder.value,
+      }),
+    });
+    exportState.value = {
+      filename: payload.data.export_job.filename,
+      rowCount: payload.data.export_job.row_count,
+    };
+  } catch (error) {
+    pageMessage.value = error.message || "账号台账导出失败";
+    pageMessageType.value = "error";
+  } finally {
+    exporting.value = false;
+  }
+}
+
+function goToExports() {
+  router.push({ path: "/exports", query: { keyword: exportState.value?.filename || "" } });
+}
+
+function goToHistoryExports() {
+  router.push({ path: "/exports", query: { keyword: historyExportState.value?.filename || "" } });
 }
 
 onMounted(loadAccounts);

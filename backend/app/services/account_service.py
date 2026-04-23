@@ -5,7 +5,7 @@ from datetime import date
 import re
 
 from flask import current_app
-from sqlalchemy import asc, desc
+from sqlalchemy import and_, asc, desc, or_
 from sqlalchemy import select
 
 from ..auth import current_user
@@ -121,6 +121,7 @@ def query_mobile_accounts(
     sort_order: str = "desc",
     page: int = 1,
     page_size: int = 50,
+    export_all: bool = False,
 ):
     query = MobileAccount.query.join(AccountBatch)
     if status:
@@ -144,16 +145,20 @@ def query_mobile_accounts(
     order_column = sortable_columns.get(sort_by, MobileAccount.id)
     direction = desc if str(sort_order).lower() == "desc" else asc
 
+    total = query.count()
+    ordered_query = query.order_by(direction(order_column), AccountBatch.id.desc(), MobileAccount.id.asc())
+    if export_all:
+        items = ordered_query.all()
+        return {
+            "items": items,
+            "total": total,
+            "page": 1,
+            "page_size": total,
+        }
+
     page = max(1, int(page or 1))
     page_size = max(1, min(int(page_size or 50), 200))
-
-    total = query.count()
-    items = (
-        query.order_by(direction(order_column), AccountBatch.id.desc(), MobileAccount.id.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
+    items = ordered_query.offset((page - 1) * page_size).limit(page_size).all()
     return {
         "items": items,
         "total": total,
@@ -187,12 +192,29 @@ def _default_warn_days() -> int:
     return int(get_config_value("batch.warn_days_default", 1) or 1)
 
 
+def allocatable_batch_condition(target_day: date | None = None):
+    current_day = target_day or date.today()
+    return and_(
+        AccountBatch.status == "active",
+        or_(AccountBatch.expire_at.is_(None), AccountBatch.expire_at >= current_day),
+    )
+
+
+def batch_effective_status(batch: AccountBatch, target_day: date | None = None) -> str:
+    current_day = target_day or date.today()
+    if batch.status != "active":
+        return batch.status
+    if batch.expire_at and batch.expire_at < current_day:
+        return "expired"
+    return "active"
+
+
 def _derive_batch_priority(batch_code: str) -> int:
     code = str(batch_code or "").strip()
     if code == ZERO_ACCOUNT_BATCH_CODE:
         return 0
     if BATCH_CODE_MONTH_PATTERN.fullmatch(code):
-        return 999999 - int(code)
+        return int(code)
     return 100
 
 
@@ -203,6 +225,6 @@ def _derive_batch_expire_at(batch_code: str) -> date | None:
     match = BATCH_CODE_MONTH_PATTERN.fullmatch(code)
     if not match:
         return None
-    year = int(match.group("year"))
+    year = int(match.group("year")) + 1
     month = int(match.group("month"))
     return date(year, month, monthrange(year, month)[1])

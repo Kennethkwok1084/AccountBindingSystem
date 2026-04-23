@@ -5,6 +5,12 @@
       <a-button @click="load">刷新</a-button>
     </template>
 
+    <a-alert
+      type="info"
+      message="状态说明：参与分配 = 手工状态为 active 且批次未到期；已过期 = 到期日早于今天；停用 = 手工停用，不参与分配。"
+      style="margin-bottom: 16px;"
+    />
+
     <a-card title="新建批次" size="small" style="margin-bottom: 20px;">
       <a-form layout="inline" :model="createForm" @finish="createBatch" style="flex-wrap: wrap; gap: 8px;">
         <a-form-item label="批次编码">
@@ -46,8 +52,9 @@
       <a-form-item label="状态">
         <a-select v-model:value="filters.status" style="width: 110px;">
           <a-select-option value="">全部</a-select-option>
-          <a-select-option value="active">active</a-select-option>
-          <a-select-option value="inactive">inactive</a-select-option>
+          <a-select-option value="active">参与分配</a-select-option>
+          <a-select-option value="expired">已过期</a-select-option>
+          <a-select-option value="inactive">停用</a-select-option>
         </a-select>
       </a-form-item>
       <a-form-item>
@@ -94,10 +101,10 @@
         </template>
         <template v-if="column.key === 'status'">
           <a-select v-if="editingId === record.id" v-model:value="editRow.status" size="small" style="width: 100px;">
-            <a-select-option value="active">active</a-select-option>
-            <a-select-option value="inactive">inactive</a-select-option>
+            <a-select-option value="active">启用</a-select-option>
+            <a-select-option value="inactive">停用</a-select-option>
           </a-select>
-          <a-tag v-else :color="record.status === 'active' ? 'success' : 'default'">{{ record.status }}</a-tag>
+          <a-tag v-else :color="statusTagColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
         </template>
         <template v-if="column.key === 'action'">
           <a-space>
@@ -202,6 +209,26 @@ async function createBatch() {
   await load();
 }
 
+function statusLabel(status) {
+  return (
+    {
+      active: "参与分配",
+      expired: "已过期",
+      inactive: "停用",
+    }[status] || status
+  );
+}
+
+function statusTagColor(status) {
+  return (
+    {
+      active: "success",
+      expired: "warning",
+      inactive: "default",
+    }[status] || "default"
+  );
+}
+
 function startEdit(item) {
   editingId.value = item.id;
   Object.assign(editRow, {
@@ -210,7 +237,7 @@ function startEdit(item) {
     priority: item.priority,
     warn_days: item.warn_days,
     expire_at: item.expire_at || null,
-    status: item.status,
+    status: item.raw_status || item.status,
   });
 }
 

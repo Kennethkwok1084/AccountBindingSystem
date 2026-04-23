@@ -33,6 +33,7 @@ from .audit_service import (
     write_audit,
 )
 import uuid as _uuid
+from .account_service import allocatable_batch_condition
 from .config_service import get_config_value, set_config_value
 from .date_service import compute_expire_from, normalize_date, normalize_datetime, utcnow
 from .excel_service import validate_excel
@@ -1258,7 +1259,7 @@ def _reserve_candidate(exclude_batch_id: int | None = None):
     query = (
         select(MobileAccount)
         .join(AccountBatch, AccountBatch.id == MobileAccount.batch_id)
-        .filter(MobileAccount.status == "available", AccountBatch.status == "active")
+        .filter(MobileAccount.status == "available", allocatable_batch_condition())
         .order_by(AccountBatch.priority.desc(), AccountBatch.id.desc(), MobileAccount.id.asc())
         .with_for_update()
     )
@@ -1274,7 +1275,7 @@ def _reserve_random_candidate(
     query = (
         select(MobileAccount.id)
         .join(AccountBatch, AccountBatch.id == MobileAccount.batch_id)
-        .filter(MobileAccount.status == "available", AccountBatch.status == "active")
+        .filter(MobileAccount.status == "available", allocatable_batch_condition())
     )
     if exclude_batch_id is not None:
         query = query.filter(MobileAccount.batch_id != exclude_batch_id)
@@ -1293,7 +1294,7 @@ def _reserve_random_candidate(
             .filter(
                 MobileAccount.id == candidate_id,
                 MobileAccount.status == "available",
-                AccountBatch.status == "active",
+                allocatable_batch_condition(),
             )
             .with_for_update()
         ).scalar_one_or_none()
@@ -1306,7 +1307,7 @@ def _preview_candidate(exclude_batch_id: int | None = None):
     query = (
         select(MobileAccount)
         .join(AccountBatch, AccountBatch.id == MobileAccount.batch_id)
-        .filter(MobileAccount.status == "available", AccountBatch.status == "active")
+        .filter(MobileAccount.status == "available", allocatable_batch_condition())
         .order_by(AccountBatch.priority.desc(), AccountBatch.id.desc(), MobileAccount.id.asc())
     )
     if exclude_batch_id is not None:
@@ -1318,7 +1319,7 @@ def _list_preview_candidates() -> list[MobileAccount]:
     query = (
         select(MobileAccount)
         .join(AccountBatch, AccountBatch.id == MobileAccount.batch_id)
-        .filter(MobileAccount.status == "available", AccountBatch.status == "active")
+        .filter(MobileAccount.status == "available", allocatable_batch_condition())
         .order_by(AccountBatch.priority.desc(), AccountBatch.id.desc(), MobileAccount.id.asc())
     )
     return db.session.execute(query).scalars().all()

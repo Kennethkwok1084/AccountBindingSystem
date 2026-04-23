@@ -8,6 +8,25 @@
       style="margin-bottom: 20px;"
     />
 
+    <a-alert
+      v-if="successState"
+      type="success"
+      message="换绑已完成"
+      show-icon
+      style="margin-bottom: 20px;"
+    >
+      <template #description>
+        <div style="margin-bottom: 12px;">
+          学号 {{ successState.studentNo }} 已从 {{ successState.oldAccount }} 换绑到 {{ successState.newAccount }}。
+          导出文件已生成：{{ successState.exportFilename }}。请前往导出记录页面下载。
+        </div>
+        <a-space wrap>
+          <a-button type="primary" @click="goToExports">前往导出记录</a-button>
+          <a-button @click="clearSuccess">关闭提示</a-button>
+        </a-space>
+      </template>
+    </a-alert>
+
     <a-form layout="vertical" :model="formModel" style="max-width: 520px;" @finish="handleSubmit">
       <a-form-item label="学号" required>
         <a-input v-model:value="studentNo" placeholder="输入学号" allow-clear />
@@ -32,16 +51,18 @@
 
 <script setup>
 import { computed, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
-import { Modal, message } from "ant-design-vue";
+import { useRoute, useRouter } from "vue-router";
+import { Modal } from "ant-design-vue";
 import { apiFetch, createIdempotencyKey } from "../services/api";
 import { useLeaveGuard } from "../composables/useLeaveGuard";
 
 const route = useRoute();
+const router = useRouter();
 const studentNo = ref("");
 const oldAccountAction = ref("release");
 const remark = ref("");
 const submitting = ref(false);
+const successState = ref(null);
 
 const formModel = computed(() => ({ studentNo: studentNo.value }));
 const isDirty = computed(() => Boolean(studentNo.value || remark.value));
@@ -60,6 +81,7 @@ function handleSubmit() {
 async function doSubmit() {
   submitting.value = true;
   try {
+    successState.value = null;
     const payload = await apiFetch("/api/v1/bindings/manual-rebind", {
       method: "POST",
       headers: { "X-Idempotency-Key": createIdempotencyKey("manual-rebind") },
@@ -69,12 +91,32 @@ async function doSubmit() {
         remark: remark.value,
       }),
     });
-    message.success(`换绑完成：${payload.data.old_account} → ${payload.data.new_account}`);
+    successState.value = {
+      studentNo: payload.data.student_no,
+      oldAccount: payload.data.old_account,
+      newAccount: payload.data.new_account,
+      exportFilename: payload.data.export_job?.filename || "导出文件",
+    };
     studentNo.value = "";
     remark.value = "";
   } finally {
     submitting.value = false;
   }
+}
+
+function goToExports() {
+  if (!successState.value?.exportFilename) {
+    router.push("/exports");
+    return;
+  }
+  router.push({
+    path: "/exports",
+    query: { keyword: successState.value.exportFilename },
+  });
+}
+
+function clearSuccess() {
+  successState.value = null;
 }
 
 onMounted(() => {

@@ -2,10 +2,15 @@ from io import BytesIO
 import pandas as pd
 from datetime import date, datetime, timedelta
 from pathlib import Path
+import logging
+from types import SimpleNamespace
 
 from app.extensions import db
 from app.models import AccountBatch, BindingHistory, CurrentBinding, ExportJob, MobileAccount
+from app.services.audit_service import write_audit
+from app.services.config_service import set_config_value
 from app.services.scheduler_service import run_binding_expire_release, run_cleanup_temp_files
+from app.services import syslog_service
 from .conftest import excel_file
 
 
@@ -62,9 +67,9 @@ def test_batches_and_import_detail(client, auth_headers):
     imported_batch = AccountBatch.query.filter_by(batch_code="202604").first()
     assert imported_batch.batch_name == "202604"
     assert imported_batch.batch_type == "normal"
-    assert imported_batch.priority == 797395
+    assert imported_batch.priority == 202604
     assert imported_batch.warn_days == 1
-    assert imported_batch.expire_at.isoformat() == "2026-04-30"
+    assert imported_batch.expire_at.isoformat() == "2027-04-30"
 
 
 def test_account_import_returns_concrete_template_error(client, auth_headers):
@@ -138,6 +143,379 @@ def test_account_template_download(client, auth_headers):
     assert list(dataframe.columns) == ["account", "batch_code"]
 
 
+def test_student_ledger_export_creates_excel_job(client, auth_headers):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "account": "yd-student-ledger-001",
+                            "batch_code": "202606",
+                        }
+                    ]
+                ),
+                "accounts.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    preview = client.post(
+        "/api/v1/charge-batches/preview",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "student_no": "2023010001",
+                            "name": "导出台账学生",
+                            "charge_time": datetime(2026, 4, 20, 9, 0, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        }
+                    ]
+                ),
+                "charge.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    batch_id = preview.json["data"]["operation_batch_id"]
+    client.post(
+        f"/api/v1/charge-batches/{batch_id}/execute",
+        headers={**auth_headers, "X-Idempotency-Key": "student-ledger-export"},
+        json={"confirm": True},
+    )
+
+    response = client.post(
+        "/api/v1/students/export",
+        headers=auth_headers,
+        json={"keyword": "2023010001"},
+    )
+    assert response.status_code == 201
+    export_id = response.json["data"]["export_job"]["id"]
+    export_job = db.session.get(ExportJob, export_id)
+    dataframe = pd.read_excel(export_job.stored_path)
+    assert list(dataframe.columns) == ["学号", "姓名", "当前账号", "绑定到期", "来源到期", "预期到期"]
+    assert str(dataframe.iloc[0]["学号"]) == "2023010001"
+
+
+def test_account_ledger_export_creates_excel_job(client, auth_headers):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "account": "yd-ledger-001",
+                            "batch_code": "202606",
+                        }
+                    ]
+                ),
+                "accounts.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    response = client.post(
+        "/api/v1/mobile-accounts/export",
+        headers=auth_headers,
+        json={"account": "yd-ledger-001"},
+    )
+    assert response.status_code == 201
+    export_id = response.json["data"]["export_job"]["id"]
+    export_job = db.session.get(ExportJob, export_id)
+    dataframe = pd.read_excel(export_job.stored_path)
+    assert list(dataframe.columns) == ["账号", "状态", "批次编码", "批次类型", "批次状态", "批次到期日", "最近分配时间"]
+    assert dataframe.iloc[0]["账号"] == "yd-ledger-001"
+
+
+def test_student_history_export_creates_excel_job(client, auth_headers):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={"file": (excel_file([{"account": "yd-his-001", "batch_code": "202606"}]), "accounts.xlsx")},
+        content_type="multipart/form-data",
+    )
+    preview = client.post(
+        "/api/v1/charge-batches/preview",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "student_no": "2023010002",
+                            "name": "历史学生",
+                            "charge_time": datetime(2026, 4, 20, 9, 0, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        }
+                    ]
+                ),
+                "charge.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    batch_id = preview.json["data"]["operation_batch_id"]
+    client.post(
+        f"/api/v1/charge-batches/{batch_id}/execute",
+        headers={**auth_headers, "X-Idempotency-Key": "student-history-export"},
+        json={"confirm": True},
+    )
+
+    response = client.post(
+        "/api/v1/students/2023010002/history/export",
+        headers=auth_headers,
+        json={},
+    )
+    assert response.status_code == 201
+    export_job = db.session.get(ExportJob, response.json["data"]["export_job"]["id"])
+    dataframe = pd.read_excel(export_job.stored_path)
+    assert list(dataframe.columns) == ["学号", "姓名", "时间", "动作", "旧账号ID", "旧账号", "新账号ID", "新账号"]
+    assert str(dataframe.iloc[0]["学号"]) == "2023010002"
+
+
+def test_account_history_export_creates_excel_job(client, auth_headers):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {"account": "yd-his-acc-001", "batch_code": "202606"},
+                    ]
+                ),
+                "accounts.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    preview = client.post(
+        "/api/v1/charge-batches/preview",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "student_no": "2023010003",
+                            "name": "历史账号学生",
+                            "charge_time": datetime(2026, 4, 20, 9, 0, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        }
+                    ]
+                ),
+                "charge.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    batch_id = preview.json["data"]["operation_batch_id"]
+    execute = client.post(
+        f"/api/v1/charge-batches/{batch_id}/execute",
+        headers={**auth_headers, "X-Idempotency-Key": "account-history-export"},
+        json={"confirm": True},
+    )
+    account_name = execute.json["data"]["export_job"]["filename"]  # placeholder to keep execute used
+    assert account_name
+
+    response = client.post(
+        "/api/v1/ledger/accounts/yd-his-acc-001/export",
+        headers=auth_headers,
+        json={},
+    )
+    assert response.status_code == 201
+    export_job = db.session.get(ExportJob, response.json["data"]["export_job"]["id"])
+    dataframe = pd.read_excel(export_job.stored_path)
+    assert list(dataframe.columns) == ["账号", "时间", "动作", "学号", "姓名", "旧账号ID", "旧账号", "新账号ID", "新账号"]
+    assert dataframe.iloc[0]["账号"] == "yd-his-acc-001"
+
+
+def test_audit_logs_export_creates_excel_job(client, auth_headers):
+    client.put(
+        "/api/v1/config",
+        headers=auth_headers,
+        json={"package.month_days": 32},
+    )
+
+    response = client.post(
+        "/api/v1/audit-logs/export",
+        headers=auth_headers,
+        json={"action": "update_config"},
+    )
+    assert response.status_code == 201
+    export_job = db.session.get(ExportJob, response.json["data"]["export_job"]["id"])
+    dataframe = pd.read_excel(export_job.stored_path)
+    assert list(dataframe.columns) == ["ID", "动作", "资源类型", "资源ID", "操作人ID", "详情", "时间"]
+    assert "update_config" in set(dataframe["动作"].astype(str))
+
+
+def test_config_metadata_contains_chinese_labels_and_types(client, auth_headers):
+    response = client.get("/api/v1/config", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json["data"]["package.month_days"]["label"] == "包月天数"
+    assert response.json["data"]["package.month_days"]["type"] == "number"
+    assert response.json["data"]["integration.syslog.enabled"]["label"] == "启用 Syslog 转发"
+    assert response.json["data"]["integration.syslog.enabled"]["type"] == "boolean"
+
+
+def test_write_audit_emits_syslog_when_enabled(app, monkeypatch):
+    emitted = {}
+
+    class FakeHandler:
+        LOG_USER = 1
+        LOG_LOCAL0 = 16
+
+        def __init__(self, address, facility, socktype):
+            emitted["address"] = address
+            emitted["facility"] = facility
+            emitted["socktype"] = socktype
+
+        def setFormatter(self, formatter):
+            emitted["formatter"] = formatter
+
+        def close(self):
+            emitted["closed"] = True
+
+    class FakeLogger:
+        def __init__(self):
+            self.handlers = []
+            self.propagate = False
+            self.level = None
+
+        def setLevel(self, level):
+            self.level = level
+
+        def info(self, message):
+            emitted["message"] = message
+
+    fake_logger = FakeLogger()
+
+    monkeypatch.setattr(syslog_service, "SysLogHandler", FakeHandler)
+    monkeypatch.setattr(
+        syslog_service,
+        "logging",
+        SimpleNamespace(
+            INFO=logging.INFO,
+            Formatter=lambda pattern: pattern,
+            getLogger=lambda _name=None: fake_logger,
+        ),
+    )
+
+    with app.app_context():
+        set_config_value("integration.syslog.enabled", True)
+        set_config_value("integration.syslog.host", "127.0.0.1")
+        set_config_value("integration.syslog.port", 1514)
+        set_config_value("integration.syslog.protocol", "udp")
+        set_config_value("integration.syslog.facility", "local0")
+        set_config_value("integration.syslog.app_name", "abs-test")
+
+        write_audit("test_syslog", "system", "1", {"hello": "world"}, operator_id=1)
+
+    assert emitted["address"] == ("127.0.0.1", 1514)
+    assert emitted["socktype"] is not None
+    assert fake_logger.level == logging.INFO
+    assert '"event_type": "audit_log"' in emitted["message"]
+    assert '"action": "test_syslog"' in emitted["message"]
+    assert emitted["closed"] is True
+
+
+def test_test_syslog_connectivity_endpoint_uses_payload_values(client, auth_headers, monkeypatch):
+    emitted = {}
+
+    class FakeHandler:
+        LOG_USER = 1
+        LOG_LOCAL0 = 16
+
+        def __init__(self, address, facility, socktype):
+            emitted["address"] = address
+            emitted["facility"] = facility
+            emitted["socktype"] = socktype
+
+        def setFormatter(self, formatter):
+            emitted["formatter"] = formatter
+
+        def close(self):
+            emitted["closed"] = True
+
+    class FakeLogger:
+        def __init__(self):
+            self.handlers = []
+            self.propagate = False
+            self.level = None
+
+        def setLevel(self, level):
+            self.level = level
+
+        def info(self, message):
+            emitted["message"] = message
+
+    fake_logger = FakeLogger()
+    monkeypatch.setattr(syslog_service, "SysLogHandler", FakeHandler)
+    monkeypatch.setattr(
+        syslog_service,
+        "logging",
+        SimpleNamespace(
+            INFO=logging.INFO,
+            Formatter=lambda pattern: pattern,
+            getLogger=lambda _name=None: fake_logger,
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/config/test-syslog",
+        headers=auth_headers,
+        json={
+            "integration.syslog.enabled": False,
+            "integration.syslog.host": "10.0.0.8",
+            "integration.syslog.port": 5514,
+            "integration.syslog.protocol": "tcp",
+            "integration.syslog.facility": "local0",
+            "integration.syslog.app_name": "abs-ui-test",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json["data"]["host"] == "10.0.0.8"
+    assert response.json["data"]["port"] == 5514
+    assert response.json["data"]["protocol"] == "tcp"
+    assert emitted["address"] == ("10.0.0.8", 5514)
+    assert '"event_type": "syslog_connectivity_test"' in emitted["message"]
+
+
+def test_batch_list_marks_past_expire_batches_as_expired(client, auth_headers):
+    create = client.post(
+        "/api/v1/batches",
+        headers=auth_headers,
+        json={
+            "batch_code": "B202401",
+            "batch_name": "过期批次",
+            "batch_type": "normal",
+            "priority": 10,
+            "warn_days": 1,
+            "expire_at": "2020-01-31",
+            "status": "active",
+        },
+    )
+    assert create.status_code == 201
+
+    response = client.get("/api/v1/batches?status=expired", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json["data"]["items"][0]["status"] == "expired"
+    assert response.json["data"]["items"][0]["raw_status"] == "active"
+
+
 def test_manual_rebind_and_scheduler_jobs(client, auth_headers, app):
     client.post(
         "/api/v1/mobile-accounts/import",
@@ -200,8 +578,8 @@ def test_manual_rebind_and_scheduler_jobs(client, auth_headers, app):
         },
     )
     assert manual.status_code == 200
-    assert manual.json["data"]["old_account"] == "yd4000"
-    assert manual.json["data"]["new_account"] == "yd4001"
+    assert manual.json["data"]["old_account"] == "yd4001"
+    assert manual.json["data"]["new_account"] == "yd4000"
     assert ExportJob.query.count() == 2
 
     binding = CurrentBinding.query.first()

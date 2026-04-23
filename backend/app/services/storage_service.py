@@ -41,12 +41,6 @@ def save_upload(file: FileStorage, category: str) -> tuple[str, str]:
 
 
 def create_export_file(rows: list[dict]) -> tuple[str, str]:
-    storage_root = Path(current_app.config["STORAGE_ROOT"]) / "exports"
-    storage_root.mkdir(parents=True, exist_ok=True)
-    timestamp = localnow().strftime("%y%m%d%H%M%S")
-    full_path = _next_export_path(storage_root, f"移动{timestamp}", ".xlsx")
-    filename = full_path.name
-
     normalized_rows = []
     for row in rows:
         normalized_rows.append(
@@ -61,7 +55,25 @@ def create_export_file(rows: list[dict]) -> tuple[str, str]:
             }
         )
 
-    pd.DataFrame(normalized_rows, columns=EXPORT_COLUMNS).to_excel(full_path, index=False)
+    return create_tabular_export_file(normalized_rows, "移动", EXPORT_COLUMNS)
+
+
+def create_tabular_export_file(rows: list[dict], prefix: str, columns: list[str] | None = None) -> tuple[str, str]:
+    storage_root = Path(current_app.config["STORAGE_ROOT"]) / "exports"
+    storage_root.mkdir(parents=True, exist_ok=True)
+    timestamp = localnow().strftime("%y%m%d%H%M%S")
+    full_path = _next_export_path(storage_root, f"{prefix}{timestamp}", ".xlsx")
+    filename = full_path.name
+
+    if columns:
+        dataframe = pd.DataFrame(rows)
+        for column in columns:
+            if column not in dataframe.columns:
+                dataframe[column] = ""
+        dataframe = dataframe[columns]
+    else:
+        dataframe = pd.DataFrame(rows)
+    dataframe.to_excel(full_path, index=False)
     return filename, str(full_path)
 
 
