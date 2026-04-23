@@ -190,18 +190,18 @@ def test_manual_rebind_and_scheduler_jobs(client, auth_headers, app):
         json={"confirm": True},
     )
 
-    second_account = MobileAccount.query.filter_by(account="yd4001").first()
     manual = client.post(
         "/api/v1/bindings/manual-rebind",
         headers={**auth_headers, "X-Idempotency-Key": "manual-1"},
         json={
             "student_no": "2023005001",
-            "new_account_id": second_account.id,
             "old_account_action": "disable",
             "remark": "异常换绑",
         },
     )
     assert manual.status_code == 200
+    assert manual.json["data"]["old_account"] == "yd4000"
+    assert manual.json["data"]["new_account"] == "yd4001"
     assert ExportJob.query.count() == 2
 
     binding = CurrentBinding.query.first()

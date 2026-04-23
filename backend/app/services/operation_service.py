@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+import random
 import threading
 
 from sqlalchemy import select
@@ -538,12 +539,12 @@ def _find_existing_full_students_batch(import_job_id: int) -> OperationBatch | N
     ).scalars().first()
 
 
-def manual_rebind(student_no: str, new_account_id: int, old_account_action: str, remark: str | None, idempotency_key: str):
+def manual_rebind(student_no: str, old_account_action: str, remark: str | None, idempotency_key: str):
     with operation_trace("manual_rebind"):
-        return _manual_rebind_inner(student_no, new_account_id, old_account_action, remark, idempotency_key)
+        return _manual_rebind_inner(student_no, old_account_action, remark, idempotency_key)
 
 
-def _manual_rebind_inner(student_no: str, new_account_id: int, old_account_action: str, remark: str | None, idempotency_key: str):
+def _manual_rebind_inner(student_no: str, old_account_action: str, remark: str | None, idempotency_key: str):
     student = db.session.execute(select(Student).filter_by(student_no=student_no)).scalar_one_or_none()
     if student is None:
         raise LookupError("学号不存在")
@@ -566,7 +567,7 @@ def _manual_rebind_inner(student_no: str, new_account_id: int, old_account_actio
         student_name=student.name,
         action_plan="rebind",
         status="previewed",
-        raw_payload=_jsonable({"remark": remark, "old_account_action": old_account_action, "new_account_id": new_account_id}),
+        raw_payload=_jsonable({"remark": remark, "old_account_action": old_account_action}),
     )
     db.session.add(detail)
 
@@ -577,13 +578,9 @@ def _manual_rebind_inner(student_no: str, new_account_id: int, old_account_actio
         old_account = db.session.execute(
             select(MobileAccount).filter_by(id=binding.mobile_account_id).with_for_update()
         ).scalar_one()
-        new_account = db.session.execute(
-            select(MobileAccount).filter_by(id=new_account_id).with_for_update()
-        ).scalar_one_or_none()
+        new_account = _reserve_random_candidate(exclude_account_id=old_account.id)
         if new_account is None:
-            raise LookupError("新账号不存在")
-        if new_account.status != "available":
-            raise ValueError("新账号不可用")
+            raise ValueError("当前无可用于换绑的新账号")
 
         old_account_before = _account_snapshot(old_account)
         new_account_before = _account_snapshot(new_account)
@@ -1268,6 +1265,41 @@ def _reserve_candidate(exclude_batch_id: int | None = None):
     if exclude_batch_id is not None:
         query = query.filter(MobileAccount.batch_id != exclude_batch_id)
     return db.session.execute(query).scalars().first()
+
+
+def _reserve_random_candidate(
+    exclude_batch_id: int | None = None,
+    exclude_account_id: int | None = None,
+) -> MobileAccount | None:
+    query = (
+        select(MobileAccount.id)
+        .join(AccountBatch, AccountBatch.id == MobileAccount.batch_id)
+        .filter(MobileAccount.status == "available", AccountBatch.status == "active")
+    )
+    if exclude_batch_id is not None:
+        query = query.filter(MobileAccount.batch_id != exclude_batch_id)
+    if exclude_account_id is not None:
+        query = query.filter(MobileAccount.id != exclude_account_id)
+
+    candidate_ids = list(db.session.execute(query.order_by(MobileAccount.id.asc())).scalars())
+    if not candidate_ids:
+        return None
+
+    random.shuffle(candidate_ids)
+    for candidate_id in candidate_ids:
+        candidate = db.session.execute(
+            select(MobileAccount)
+            .join(AccountBatch, AccountBatch.id == MobileAccount.batch_id)
+            .filter(
+                MobileAccount.id == candidate_id,
+                MobileAccount.status == "available",
+                AccountBatch.status == "active",
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if candidate is not None:
+            return candidate
+    return None
 
 
 def _preview_candidate(exclude_batch_id: int | None = None):

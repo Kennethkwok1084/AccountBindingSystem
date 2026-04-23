@@ -27,27 +27,27 @@
       </a-button>
     </a-space>
 
-    <a-alert
-      v-if="importErrors.length"
-      type="error"
-      message="导入错误明细"
-      style="margin-bottom: 16px;"
-    />
-    <a-table
-      v-if="importErrors.length"
-      :columns="errorColumns"
-      :data-source="importErrors"
-      :row-key="(r, i) => `${r.row_no}-${r.field_name || 'none'}-${i}`"
-      size="small"
-      :pagination="false"
-      style="margin-bottom: 20px;"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'row_no'">
-          {{ record.row_no === 0 ? "模板" : record.row_no }}
+    <template v-if="importErrors.length">
+      <a-alert
+        type="error"
+        :message="`导入错误明细（${importErrors.length} 条）`"
+        style="margin-bottom: 16px;"
+      />
+      <a-table
+        :columns="errorColumns"
+        :data-source="importErrors"
+        :row-key="(r, i) => `${r.row_no}-${r.field_name || 'none'}-${i}`"
+        size="small"
+        :pagination="false"
+        style="margin-bottom: 20px;"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'row_no'">
+            {{ record.row_no === 0 ? "模板" : record.row_no }}
+          </template>
         </template>
-      </template>
-    </a-table>
+      </a-table>
+    </template>
 
     <a-modal
       v-model:open="confirmVisible"
@@ -110,7 +110,7 @@ function captureFile(file) {
 }
 
 const errorColumns = [
-  { title: "行号", key: "row_no", width: 70 },
+  { title: "行号", dataIndex: "row_no", key: "row_no", width: 70 },
   { title: "字段", dataIndex: "field_name", customRender: ({ text }) => text || "-" },
   { title: "错误码", dataIndex: "error_code" },
   { title: "说明", dataIndex: "error_message" },
@@ -136,6 +136,7 @@ async function submitAndConfirm() {
       body: formData,
     });
     previewData.value = payload.data;
+    importErrors.value = Array.isArray(payload.data.import_errors) ? payload.data.import_errors : [];
     confirmVisible.value = true;
   } catch (error) {
     message.error(error.message || "生成预览失败");

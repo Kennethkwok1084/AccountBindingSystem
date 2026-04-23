@@ -60,6 +60,12 @@ def charge_preview():
                 for issue in issues
             ],
         )
+    issues = (
+        ImportJobError.query.filter_by(import_job_id=import_job.id)
+        .order_by(ImportJobError.row_no.asc(), ImportJobError.id.asc())
+        .limit(200)
+        .all()
+    )
     details = OperationBatchDetail.query.filter_by(operation_batch_id=operation_batch.id).order_by(OperationBatchDetail.row_no.asc()).all()
     return success(
         {
@@ -67,10 +73,20 @@ def charge_preview():
             "import_job_id": import_job.id,
             "last_processed_charge_time_before": operation_batch.last_processed_charge_time_before.isoformat(sep=" ") if operation_batch.last_processed_charge_time_before else None,
             "preview_rows": len(details),
+            "import_error_count": len(issues),
             "to_allocate_count": sum(1 for detail in details if detail.action_plan == "allocate"),
             "to_renew_count": sum(1 for detail in details if detail.action_plan == "renew"),
             "to_rebind_count": sum(1 for detail in details if detail.action_plan == "rebind"),
             "fail_count": sum(1 for detail in details if detail.status == "failed"),
+            "import_errors": [
+                {
+                    "row_no": issue.row_no,
+                    "field_name": issue.field_name,
+                    "error_code": issue.error_code,
+                    "error_message": issue.error_message,
+                }
+                for issue in issues
+            ],
             "details": [
                 {
                     "row_no": detail.row_no,
@@ -275,7 +291,6 @@ def binding_manual_rebind():
     try:
         operation_batch, student, old_account, new_account, export_job = manual_rebind(
             payload.get("student_no", ""),
-            int(payload.get("new_account_id")),
             payload.get("old_account_action", "release"),
             payload.get("remark"),
             idempotency_key,

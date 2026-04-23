@@ -143,6 +143,62 @@ def test_charge_preview_supports_chinese_headers_and_optional_name(client, auth_
     assert preview.json["data"]["to_allocate_count"] == 1
 
 
+def test_charge_preview_returns_import_errors_for_partial_valid_rows(client, auth_headers):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "account": "yd9010",
+                            "batch_code": "202607",
+                        }
+                    ]
+                ),
+                "accounts.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    preview = client.post(
+        "/api/v1/charge-batches/preview",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "student_no": "2023009010",
+                            "name": "学生A",
+                            "charge_time": datetime(2026, 4, 20, 9, 0, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        },
+                        {
+                            "student_no": "2023009011",
+                            "name": "学生B",
+                            "charge_time": datetime(2026, 4, 20, 9, 1, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": -1,
+                        },
+                    ]
+                ),
+                "charge-mixed.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert preview.status_code == 201
+    assert preview.json["data"]["preview_rows"] == 1
+    assert preview.json["data"]["import_error_count"] == 1
+    assert preview.json["data"]["import_errors"][0]["row_no"] == 3
+    assert preview.json["data"]["import_errors"][0]["field_name"] == "fee_amount"
+
+
 def test_charge_batch_execute_rebinds_expired_students_to_unique_accounts(client, auth_headers):
     client.post(
         "/api/v1/mobile-accounts/import",
