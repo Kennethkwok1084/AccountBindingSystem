@@ -13,6 +13,7 @@ import AlertsView from "./views/AlertsView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import StudentLedgerView from "./views/StudentLedgerView.vue";
 import AccountLedgerView from "./views/AccountLedgerView.vue";
+import AuditLogsView from "./views/AuditLogsView.vue";
 import { fetchCurrentUser } from "./services/auth";
 
 const routes = [
@@ -28,6 +29,7 @@ const routes = [
   { path: "/operations/batch-rebind", component: BatchRebindView },
   { path: "/alerts", component: AlertsView },
   { path: "/settings", component: SettingsView },
+  { path: "/audit-logs", component: AuditLogsView },
   { path: "/ledger", redirect: "/ledger/students" },
   { path: "/ledger/students", component: StudentLedgerView },
   { path: "/ledger/accounts", component: AccountLedgerView },

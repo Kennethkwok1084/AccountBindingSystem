@@ -229,3 +229,159 @@ def test_manual_rebind_and_scheduler_jobs(client, auth_headers, app):
 def test_scheduler_manual_run_requires_idempotency_key(client, auth_headers):
     response = client.post("/api/v1/scheduler/run/inventory_alert_scan", headers=auth_headers, json={})
     assert response.status_code == 400
+
+
+def test_students_list_endpoint(client, auth_headers):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "account": "yd5100",
+                            "batch_code": "202606",
+                        }
+                    ]
+                ),
+                "accounts.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    preview = client.post(
+        "/api/v1/charge-batches/preview",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "student_no": "2023005100",
+                            "name": "测试学生",
+                            "charge_time": datetime(2026, 4, 20, 9, 0, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        }
+                    ]
+                ),
+                "charge.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    batch_id = preview.json["data"]["operation_batch_id"]
+    execute = client.post(
+        f"/api/v1/charge-batches/{batch_id}/execute",
+        headers={**auth_headers, "X-Idempotency-Key": "charge-student-list-1"},
+        json={"confirm": True},
+    )
+    assert execute.status_code == 200
+
+    response = client.get("/api/v1/students", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json["data"]["total"] >= 1
+    target = next((item for item in response.json["data"]["items"] if item["student_no"] == "2023005100"), None)
+    assert target is not None
+    assert target["name"] == "测试学生"
+    assert target["current_mobile_account"] == "yd5100"
+
+
+def test_batch_rebind_preview_and_execute_keep_target_accounts_unique(client, auth_headers):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {"account": "yd6101", "batch_code": "202604"},
+                        {"account": "yd6102", "batch_code": "202604"},
+                    ]
+                ),
+                "accounts-old.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    charge_preview = client.post(
+        "/api/v1/charge-batches/preview",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "student_no": "2023006101",
+                            "name": "甲",
+                            "charge_time": datetime(2026, 4, 20, 9, 0, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        },
+                        {
+                            "student_no": "2023006102",
+                            "name": "乙",
+                            "charge_time": datetime(2026, 4, 20, 9, 1, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        },
+                    ]
+                ),
+                "charge.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    charge_batch_id = charge_preview.json["data"]["operation_batch_id"]
+    charge_execute = client.post(
+        f"/api/v1/charge-batches/{charge_batch_id}/execute",
+        headers={**auth_headers, "X-Idempotency-Key": "batch-rebind-seed"},
+        json={"confirm": True},
+    )
+    assert charge_execute.status_code == 200
+
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {"account": "yd6103", "batch_code": "202605"},
+                        {"account": "yd6104", "batch_code": "202605"},
+                    ]
+                ),
+                "accounts-new.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    old_batch = AccountBatch.query.filter_by(batch_code="202604").first()
+    preview = client.post(
+        "/api/v1/batch-rebinds/preview",
+        headers=auth_headers,
+        json={"batch_id": old_batch.id},
+    )
+    assert preview.status_code == 200
+    suggested_accounts = [item["new_account"] for item in preview.json["data"]["items"] if item["new_account"]]
+    assert suggested_accounts == ["yd6103", "yd6104"]
+    assert len(suggested_accounts) == len(set(suggested_accounts))
+
+    execute = client.post(
+        f"/api/v1/batch-rebinds/{old_batch.id}/execute",
+        headers={**auth_headers, "X-Idempotency-Key": "batch-rebind-execute"},
+        json={"confirm": True},
+    )
+    assert execute.status_code == 200
+    assert execute.json["data"]["success_rows"] == 2
+    assert execute.json["data"]["failed_rows"] == 0
+
+    bindings = CurrentBinding.query.order_by(CurrentBinding.student_id.asc()).all()
+    rebound_accounts = {db.session.get(MobileAccount, binding.mobile_account_id).account for binding in bindings}
+    assert rebound_accounts == {"yd6103", "yd6104"}
+    assert MobileAccount.query.filter_by(account="yd6101").first().status == "expired"
+    assert MobileAccount.query.filter_by(account="yd6102").first().status == "expired"

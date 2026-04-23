@@ -5,6 +5,7 @@ from datetime import date
 import re
 
 from flask import current_app
+from sqlalchemy import asc, desc
 from sqlalchemy import select
 
 from ..auth import current_user
@@ -111,13 +112,54 @@ def import_mobile_accounts(file):
     return parse_result.rows, job
 
 
-def query_mobile_accounts(status: str | None = None, batch_code: str | None = None):
+def query_mobile_accounts(
+    status: str | None = None,
+    batch_code: str | None = None,
+    account_keyword: str | None = None,
+    batch_type: str | None = None,
+    sort_by: str = "id",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 50,
+):
     query = MobileAccount.query.join(AccountBatch)
     if status:
         query = query.filter(MobileAccount.status == status)
     if batch_code:
-        query = query.filter(AccountBatch.batch_code == batch_code)
-    return query.order_by(AccountBatch.priority.desc(), MobileAccount.id.asc()).all()
+        query = query.filter(AccountBatch.batch_code.ilike(f"%{batch_code.strip()}%"))
+    if account_keyword:
+        query = query.filter(MobileAccount.account.ilike(f"%{account_keyword.strip()}%"))
+    if batch_type:
+        query = query.filter(AccountBatch.batch_type == batch_type)
+
+    sortable_columns = {
+        "id": MobileAccount.id,
+        "account": MobileAccount.account,
+        "status": MobileAccount.status,
+        "batch_code": AccountBatch.batch_code,
+        "batch_type": AccountBatch.batch_type,
+        "priority": AccountBatch.priority,
+        "last_assigned_at": MobileAccount.last_assigned_at,
+    }
+    order_column = sortable_columns.get(sort_by, MobileAccount.id)
+    direction = desc if str(sort_order).lower() == "desc" else asc
+
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 50), 200))
+
+    total = query.count()
+    items = (
+        query.order_by(direction(order_column), AccountBatch.id.desc(), MobileAccount.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 def _persist_import_issues(job_id: int, issues) -> None:

@@ -1,5 +1,7 @@
 .DS_Store
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.pyc
@@ -7,10 +9,12 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+.idea/
 node_modules/
 dist/
 frontend/dist/
 storage/
 storage_test/
+auditor/audit_output/
 *.sqlite3
 *.db

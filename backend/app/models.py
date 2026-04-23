@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Numeric, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .extensions import db
@@ -247,6 +247,97 @@ class SchedulerRunLog(db.Model):
     message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class OperationAuditEvent(db.Model):
+    """Business-level event evidence for audit replay."""
+
+    __tablename__ = "operation_audit_event"
+    __table_args__ = (
+        Index("ix_oae_event_type_created", "event_type", "created_at"),
+        Index("ix_oae_trace_id", "trace_id"),
+        Index("ix_oae_operation_batch_id", "operation_batch_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trace_id: Mapped[str] = mapped_column(nullable=False)
+    parent_trace_id: Mapped[str | None] = mapped_column(nullable=True)
+    event_type: Mapped[str] = mapped_column(nullable=False)
+    event_stage: Mapped[str] = mapped_column(nullable=False)
+    source: Mapped[str] = mapped_column(nullable=False, default="api")
+    operation_batch_id: Mapped[int | None] = mapped_column(ForeignKey("operation_batch.id"), nullable=True)
+    import_job_id: Mapped[int | None] = mapped_column(ForeignKey("import_job.id"), nullable=True)
+    student_id: Mapped[int | None] = mapped_column(ForeignKey("student.id"), nullable=True)
+    student_no: Mapped[str | None] = mapped_column(nullable=True)
+    mobile_account_id: Mapped[int | None] = mapped_column(ForeignKey("mobile_account.id"), nullable=True)
+    mobile_account: Mapped[str | None] = mapped_column(nullable=True)
+    operator_id: Mapped[int | None] = mapped_column(ForeignKey("admin_user.id"), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(nullable=True)
+    request_id: Mapped[str | None] = mapped_column(nullable=True)
+    payload_json: Mapped[dict] = mapped_column(db.JSON, nullable=False, default=dict)
+    decision_json: Mapped[dict] = mapped_column(db.JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+
+class EntityChangeLog(db.Model):
+    """Before/after state log for key business entity mutations."""
+
+    __tablename__ = "entity_change_log"
+    __table_args__ = (
+        Index("ix_ecl_trace_id", "trace_id"),
+        Index("ix_ecl_entity", "entity_type", "entity_id"),
+        Index("ix_ecl_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trace_id: Mapped[str | None] = mapped_column(nullable=True)
+    entity_type: Mapped[str] = mapped_column(nullable=False)
+    entity_id: Mapped[str] = mapped_column(nullable=False)
+    change_type: Mapped[str] = mapped_column(nullable=False)
+    before_json: Mapped[dict | None] = mapped_column(db.JSON, nullable=True)
+    after_json: Mapped[dict | None] = mapped_column(db.JSON, nullable=True)
+    change_reason: Mapped[str | None] = mapped_column(nullable=True)
+    operation_batch_id: Mapped[int | None] = mapped_column(nullable=True)
+    student_id: Mapped[int | None] = mapped_column(nullable=True)
+    mobile_account_id: Mapped[int | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+
+class DailyAuditRun(db.Model):
+    """Daily audit execution record."""
+
+    __tablename__ = "daily_audit_run"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    audit_date: Mapped[date] = mapped_column(Date, nullable=False, unique=True)
+    scope_start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    scope_end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    overall_status: Mapped[str] = mapped_column(nullable=False, default="UNKNOWN")
+    hard_failures: Mapped[int] = mapped_column(nullable=False, default=0)
+    warnings: Mapped[int] = mapped_column(nullable=False, default=0)
+    llm_status: Mapped[str | None] = mapped_column(nullable=True)
+    summary_json: Mapped[dict] = mapped_column(db.JSON, nullable=False, default=dict)
+    report_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    issues: Mapped[list["DailyAuditIssue"]] = relationship(back_populates="audit_run")
+
+
+class DailyAuditIssue(db.Model):
+    """Individual issue found during a daily audit run."""
+
+    __tablename__ = "daily_audit_issue"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    audit_run_id: Mapped[int] = mapped_column(ForeignKey("daily_audit_run.id"), nullable=False)
+    severity: Mapped[str] = mapped_column(nullable=False)
+    rule_code: Mapped[str] = mapped_column(nullable=False)
+    title: Mapped[str] = mapped_column(nullable=False)
+    detail_json: Mapped[dict] = mapped_column(db.JSON, nullable=False, default=dict)
+    sample_refs_json: Mapped[dict] = mapped_column(db.JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    audit_run: Mapped["DailyAuditRun"] = relationship(back_populates="issues")
 
 
 def load_models() -> None:

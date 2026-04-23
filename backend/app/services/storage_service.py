@@ -9,7 +9,7 @@ from flask import current_app
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
-from .date_service import utcnow
+from .date_service import localnow, utcnow
 
 
 EXPORT_COLUMNS = [
@@ -43,7 +43,7 @@ def save_upload(file: FileStorage, category: str) -> tuple[str, str]:
 def create_export_file(rows: list[dict]) -> tuple[str, str]:
     storage_root = Path(current_app.config["STORAGE_ROOT"]) / "exports"
     storage_root.mkdir(parents=True, exist_ok=True)
-    timestamp = utcnow().strftime("%y%m%d%H%M%S")
+    timestamp = localnow().strftime("%y%m%d%H%M%S")
     full_path = _next_export_path(storage_root, f"移动{timestamp}", ".xlsx")
     filename = full_path.name
 

@@ -21,6 +21,7 @@ class TemplateColumn:
     required: bool = True
     allow_blank: bool = False
     choices: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -71,11 +72,11 @@ ACCOUNT_POOL_TEMPLATE = TemplateDefinition(
 CHARGE_LIST_TEMPLATE = TemplateDefinition(
     name="charge_list",
     columns=(
-        TemplateColumn("student_no"),
-        TemplateColumn("name"),
-        TemplateColumn("charge_time", kind="datetime"),
-        TemplateColumn("package_name"),
-        TemplateColumn("fee_amount", kind="decimal"),
+        TemplateColumn("student_no", aliases=("用户账号", "学号")),
+        TemplateColumn("name", required=False, aliases=("用户名称", "姓名")),
+        TemplateColumn("charge_time", kind="datetime", aliases=("收费时间", "状态时间")),
+        TemplateColumn("package_name", required=False, aliases=("费用类型", "业务类型", "套餐名称", "资费组")),
+        TemplateColumn("fee_amount", kind="decimal", aliases=("收费金额（元）", "收费金额")),
     ),
     duplicate_keys=("student_no", "charge_time", "package_name"),
 )
@@ -83,10 +84,10 @@ CHARGE_LIST_TEMPLATE = TemplateDefinition(
 FULL_STUDENT_TEMPLATE = TemplateDefinition(
     name="full_student_list",
     columns=(
-        TemplateColumn("student_no"),
-        TemplateColumn("name"),
-        TemplateColumn("expire_at", kind="date"),
-        TemplateColumn("mobile_account", required=False),
+        TemplateColumn("student_no", aliases=("用户账号", "学号")),
+        TemplateColumn("name", aliases=("用户名称", "姓名")),
+        TemplateColumn("expire_at", kind="date", aliases=("到期日期", "失效日期")),
+        TemplateColumn("mobile_account", required=False, aliases=("移动账号",)),
     ),
     duplicate_keys=("student_no",),
     sheet_name_config_key="full_list.sheet_name",
@@ -133,7 +134,8 @@ def validate_excel(path: str, template_name: str) -> TemplateParseResult:
         )
 
     selected_sheet = sheet_name or workbook.sheet_names[0]
-    if selected_sheet not in workbook.sheet_names:
+    resolved_sheet = _resolve_workbook_sheet_name(selected_sheet, workbook.sheet_names)
+    if resolved_sheet is None:
         return TemplateParseResult(
             template=template,
             sheet_name=selected_sheet,
@@ -149,14 +151,15 @@ def validate_excel(path: str, template_name: str) -> TemplateParseResult:
             ],
             available_columns=set(),
         )
+    selected_sheet = resolved_sheet
 
     dataframe = pd.read_excel(target_path, sheet_name=selected_sheet)
     dataframe = dataframe.where(pd.notnull(dataframe), None)
     dataframe.columns = [str(column).strip() for column in dataframe.columns]
     available_columns = set(dataframe.columns)
+    resolved_columns = _resolve_template_columns(template, available_columns)
 
-    expected_columns = {column.name for column in template.columns}
-    missing_columns = [column.name for column in template.columns if column.required and column.name not in available_columns]
+    missing_columns = [column.name for column in template.columns if column.required and not resolved_columns.get(column.name)]
     if missing_columns:
         return TemplateParseResult(
             template=template,
@@ -167,18 +170,23 @@ def validate_excel(path: str, template_name: str) -> TemplateParseResult:
                     row_no=0,
                     field_name=column_name,
                     error_code="missing_required_column",
-                    error_message=f"缺少必填列：{column_name}",
+                    error_message=_missing_column_message(template, column_name),
                     raw_data={"available_columns": sorted(available_columns)},
                 )
                 for column_name in missing_columns
             ],
-            available_columns=available_columns,
+            available_columns={column.name for column in template.columns if resolved_columns.get(column.name)},
         )
 
     duplicate_seen: set[tuple[object, ...]] = set()
     rows: list[dict] = []
     for row_no, raw_row in enumerate(dataframe.to_dict(orient="records"), start=2):
-        normalized = {column_name: raw_row.get(column_name) for column_name in expected_columns if column_name in available_columns}
+        normalized = {}
+        for column in template.columns:
+            matched_headers = resolved_columns.get(column.name, [])
+            if not matched_headers:
+                continue
+            normalized[column.name] = _pick_row_value(raw_row, matched_headers)
         row_issues = _validate_row(template, row_no, normalized)
         if template.duplicate_keys and not row_issues:
             duplicate_key = tuple(normalized.get(key) for key in template.duplicate_keys)
@@ -205,7 +213,7 @@ def validate_excel(path: str, template_name: str) -> TemplateParseResult:
         sheet_name=selected_sheet,
         rows=rows,
         issues=issues,
-        available_columns=available_columns,
+        available_columns={column.name for column in template.columns if resolved_columns.get(column.name)},
     )
 
 
@@ -325,3 +333,43 @@ def _is_blank(value) -> bool:
     except TypeError:
         pass
     return False
+
+
+def _resolve_template_columns(template: TemplateDefinition, available_columns: set[str]) -> dict[str, list[str]]:
+    resolved: dict[str, list[str]] = {}
+    for column in template.columns:
+        candidates = []
+        for candidate in (column.name, *column.aliases):
+            if candidate in available_columns:
+                candidates.append(candidate)
+        resolved[column.name] = candidates
+    return resolved
+
+
+def _pick_row_value(raw_row: dict, matched_headers: list[str]):
+    for header in matched_headers:
+        value = raw_row.get(header)
+        if not _is_blank(value):
+            return value
+    return raw_row.get(matched_headers[0]) if matched_headers else None
+
+
+def _missing_column_message(template: TemplateDefinition, column_name: str) -> str:
+    column = next((item for item in template.columns if item.name == column_name), None)
+    if not column or not column.aliases:
+        return f"缺少必填列：{column_name}"
+    aliases = " / ".join((column.name, *column.aliases))
+    return f"缺少必填列：{column.name}（可用列名：{aliases}）"
+
+
+def _resolve_workbook_sheet_name(requested_sheet_name: str, sheet_names: list[str]) -> str | None:
+    if requested_sheet_name in sheet_names:
+        return requested_sheet_name
+    normalized_requested = str(requested_sheet_name).strip().lower()
+    for sheet_name in sheet_names:
+        if str(sheet_name).strip().lower() == normalized_requested:
+            return sheet_name
+    if len(sheet_names) == 1:
+        # Fall back to the only worksheet to reduce brittle config-sheet coupling.
+        return sheet_names[0]
+    return None

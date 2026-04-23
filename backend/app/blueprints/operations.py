@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 
-from ..models import OperationBatch, OperationBatchDetail
+from ..auth import current_user
+from ..models import ImportJobError, OperationBatch, OperationBatchDetail
 from ..responses import error, success
 from ..security import require_csrf, require_session
 from ..services.operation_service import (
@@ -14,6 +15,7 @@ from ..services.operation_service import (
     preview_batch_rebind,
     preview_charge_batch,
     preview_full_students,
+    start_execute_full_students_async,
 )
 
 
@@ -38,7 +40,26 @@ def charge_preview():
     except ValueError as exc:
         return error("IMP422", str(exc), status=422)
     if operation_batch is None:
-        return error("IMP422", import_job.error_summary or "预览失败", status=422)
+        issues = (
+            ImportJobError.query.filter_by(import_job_id=import_job.id)
+            .order_by(ImportJobError.row_no.asc(), ImportJobError.id.asc())
+            .limit(200)
+            .all()
+        )
+        return error(
+            "IMP422",
+            import_job.error_summary or "预览失败",
+            status=422,
+            details=[
+                {
+                    "row_no": issue.row_no,
+                    "field_name": issue.field_name,
+                    "error_code": issue.error_code,
+                    "error_message": issue.error_message,
+                }
+                for issue in issues
+            ],
+        )
     details = OperationBatchDetail.query.filter_by(operation_batch_id=operation_batch.id).order_by(OperationBatchDetail.row_no.asc()).all()
     return success(
         {
@@ -122,11 +143,16 @@ def charge_batches():
 @require_session
 def operation_batch_summary(batch_id: int):
     batch = OperationBatch.query.get_or_404(batch_id)
+    processed_rows = batch.success_rows + batch.failed_rows
+    progress_percent = 100.0 if batch.total_rows == 0 else round(processed_rows * 100 / batch.total_rows, 2)
     return success(
         {
             "id": batch.id,
             "batch_type": batch.batch_type,
             "status": batch.status,
+            "total_rows": batch.total_rows,
+            "processed_rows": processed_rows,
+            "progress_percent": progress_percent,
             "success_rows": batch.success_rows,
             "failed_rows": batch.failed_rows,
             "last_processed_charge_time_before": batch.last_processed_charge_time_before.isoformat(sep=" ") if batch.last_processed_charge_time_before else None,
@@ -205,6 +231,39 @@ def full_students_execute(job_id: int):
     except ValueError as exc:
         return _operation_error(exc)
     return success(result)
+
+
+@bp.post("/full-students/import/<int:job_id>/execute-async")
+@require_session
+@require_csrf
+def full_students_execute_async(job_id: int):
+    idempotency_key = request.headers.get("X-Idempotency-Key")
+    user = current_user()
+    if user is None:
+        return error("AUTH401", "登录状态已失效，请重新登录", status=401)
+    try:
+        operation_batch, started = start_execute_full_students_async(
+            job_id,
+            idempotency_key,
+            user.id,
+            current_app._get_current_object(),
+        )
+    except LookupError as exc:
+        return error("OP404", str(exc), status=404)
+    except ValueError as exc:
+        return _operation_error(exc)
+    return success(
+        {
+            "operation_batch_id": operation_batch.id,
+            "job_id": job_id,
+            "status": operation_batch.status,
+            "started": started,
+            "total_rows": operation_batch.total_rows,
+            "success_rows": operation_batch.success_rows,
+            "failed_rows": operation_batch.failed_rows,
+        },
+        status=202,
+    )
 
 
 @bp.post("/bindings/manual-rebind")

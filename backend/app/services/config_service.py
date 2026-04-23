@@ -13,7 +13,7 @@ DEFAULT_CONFIGS = {
     "package.year_days": {"value": 365, "remark": "包年天数"},
     "batch.warn_days_default": {"value": 1, "remark": "批次默认预警天数"},
     "inventory.low_stock_threshold": {"value": 50, "remark": "库存低水位阈值"},
-    "charge.max_execute_rows": {"value": 20, "remark": "单次收费执行最大行数"},
+    "charge.max_execute_rows": {"value": 0, "remark": "单次收费执行最大行数（0 表示不限制）"},
     "full_list.sheet_name": {"value": "Sheet1", "remark": "完整名单默认工作表"},
     "storage.cleanup_days": {"value": 7, "remark": "临时文件保留天数"},
 }

@@ -4,6 +4,7 @@ from io import BytesIO
 
 from flask import Blueprint, current_app, request, send_file
 import pandas as pd
+from sqlalchemy import asc, desc
 
 from ..extensions import db
 from ..models import AccountBatch, ImportJobError, MobileAccount
@@ -66,7 +67,23 @@ def download_mobile_account_template():
 def mobile_accounts():
     status_filter = request.args.get("status")
     batch_code = request.args.get("batch_code")
-    items = query_mobile_accounts(status_filter, batch_code)
+    account_keyword = request.args.get("account")
+    batch_type = request.args.get("batch_type")
+    sort_by = request.args.get("sort_by", "id")
+    sort_order = request.args.get("sort_order", "desc")
+    page = int(request.args.get("page", 1) or 1)
+    page_size = int(request.args.get("page_size", 50) or 50)
+    result = query_mobile_accounts(
+        status_filter,
+        batch_code,
+        account_keyword,
+        batch_type,
+        sort_by,
+        sort_order,
+        page,
+        page_size,
+    )
+    items = result["items"]
     return success(
         {
             "items": [
@@ -81,7 +98,9 @@ def mobile_accounts():
                 }
                 for item in items
             ],
-            "total": len(items),
+            "total": result["total"],
+            "page": result["page"],
+            "page_size": result["page_size"],
         }
     )
 
@@ -174,10 +193,43 @@ def mobile_account_history(account_id: int):
 @require_session
 def list_batches():
     status_filter = request.args.get("status")
+    keyword = str(request.args.get("keyword") or "").strip()
+    batch_type = request.args.get("batch_type")
+    sort_by = request.args.get("sort_by", "priority")
+    sort_order = request.args.get("sort_order", "desc")
+    page = max(1, int(request.args.get("page", 1) or 1))
+    page_size = max(1, min(int(request.args.get("page_size", 50) or 50), 200))
+
     query = AccountBatch.query
     if status_filter:
         query = query.filter(AccountBatch.status == status_filter)
-    items = query.order_by(AccountBatch.priority.desc(), AccountBatch.id.desc()).all()
+    if batch_type:
+        query = query.filter(AccountBatch.batch_type == batch_type)
+    if keyword:
+        query = query.filter(
+            (AccountBatch.batch_code.ilike(f"%{keyword}%")) | (AccountBatch.batch_name.ilike(f"%{keyword}%"))
+        )
+
+    sortable_columns = {
+        "id": AccountBatch.id,
+        "batch_code": AccountBatch.batch_code,
+        "batch_name": AccountBatch.batch_name,
+        "batch_type": AccountBatch.batch_type,
+        "priority": AccountBatch.priority,
+        "warn_days": AccountBatch.warn_days,
+        "expire_at": AccountBatch.expire_at,
+        "status": AccountBatch.status,
+    }
+    order_column = sortable_columns.get(sort_by, AccountBatch.priority)
+    direction = desc if str(sort_order).lower() == "desc" else asc
+
+    total = query.count()
+    items = (
+        query.order_by(direction(order_column), AccountBatch.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
     return success(
         {
             "items": [
@@ -194,7 +246,9 @@ def list_batches():
                 }
                 for item in items
             ],
-            "total": len(items),
+            "total": total,
+            "page": page,
+            "page_size": page_size,
         }
     )
 

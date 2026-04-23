@@ -39,7 +39,7 @@ services:
     command: >
       sh -c "flask --app wsgi:app init-db &&
              flask --app wsgi:app seed-admin &&
-             gunicorn --bind 0.0.0.0:5000 wsgi:app"
+             gunicorn --bind 0.0.0.0:5000 --workers ${ABS_GUNICORN_WORKERS:-2} --worker-class gthread --threads ${ABS_GUNICORN_THREADS:-4} --timeout ${ABS_GUNICORN_TIMEOUT:-1800} --graceful-timeout ${ABS_GUNICORN_GRACEFUL_TIMEOUT:-60} wsgi:app"
     restart: unless-stopped
 
   scheduler:
@@ -71,6 +71,37 @@ services:
       - "${ABS_HTTP_PORT:-8080}:80"
     restart: unless-stopped
 
+  auditor:
+    build:
+      context: ./auditor
+      dockerfile: Dockerfile
+    container_name: abs_auditor
+    environment:
+      # The auditor reads the business DB but only writes audit result tables.
+      AUDIT_DATABASE_URL: postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD}@postgres:5432/${ABS_DB_NAME}
+      # SiliconFlow OpenAI-compatible endpoint for second-layer LLM reporting.
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-占位符}
+      AUDIT_LLM_BASE_URL: ${AUDIT_LLM_BASE_URL:-https://api.siliconflow.cn/v1}
+      AUDIT_RUN_CRON: ${AUDIT_RUN_CRON:-0 2 * * *}
+      AUDIT_REPORT_WEBHOOK: ${AUDIT_REPORT_WEBHOOK:-}
+      AUDIT_OUTPUT_DIR: /app/audit_output
+      # Default model is the one we verified successfully in production-like runs.
+      AUDIT_LLM_MODEL: ${AUDIT_LLM_MODEL:-Pro/moonshotai/Kimi-K2.6}
+      AUDIT_LLM_TEMPERATURE: ${AUDIT_LLM_TEMPERATURE:-0.2}
+      AUDIT_LLM_MAX_TOKENS: ${AUDIT_LLM_MAX_TOKENS:-2048}
+      # 1800 seconds = 30 minutes; long reports may take a while.
+      AUDIT_LLM_TIMEOUT_SECONDS: ${AUDIT_LLM_TIMEOUT_SECONDS:-1800}
+      AUDIT_TZ: ${AUDIT_TZ:-Asia/Shanghai}
+      TZ: ${AUDIT_TZ:-Asia/Shanghai}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - audit_output:/app/audit_output
+    command: ["python", "cron_runner.py"]
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   backend_storage:
+  audit_output:

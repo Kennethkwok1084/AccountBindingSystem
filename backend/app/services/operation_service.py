@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+import threading
 
 from sqlalchemy import select
 
@@ -20,7 +21,17 @@ from ..models import (
     OperationBatchDetail,
     Student,
 )
-from .audit_service import write_audit
+from .audit_service import (
+    _account_snapshot,
+    _binding_snapshot,
+    clear_trace_context,
+    operation_trace,
+    record_entity_change,
+    record_operation_event,
+    set_trace_context,
+    write_audit,
+)
+import uuid as _uuid
 from .config_service import get_config_value, set_config_value
 from .date_service import compute_expire_from, normalize_date, normalize_datetime, utcnow
 from .excel_service import validate_excel
@@ -30,6 +41,7 @@ from .storage_service import save_upload
 
 
 MAX_IMPORT_ERRORS_PAGE_SIZE = 200
+FULL_STUDENT_PROGRESS_COMMIT_INTERVAL = 200
 
 
 @dataclass
@@ -85,7 +97,9 @@ def preview_charge_batch(file):
     db.session.add(operation_batch)
     db.session.flush()
 
-    max_execute_rows = int(get_config_value("charge.max_execute_rows", 20) or 20)
+    max_execute_rows = int(get_config_value("charge.max_execute_rows", 0) or 0)
+    preview_candidates = _list_preview_candidates()
+    preview_reserved_candidate_ids: set[int] = set()
     preview_details = []
     for index, (row_no, row, charge_time) in enumerate(rows, start=1):
         student_no = row["student_no"]
@@ -97,12 +111,12 @@ def preview_charge_batch(file):
         new_expire_at = None
         suggested_account = None
 
-        if index > max_execute_rows:
+        if max_execute_rows > 0 and index > max_execute_rows:
             result_message = f"超出本次允许处理的前 {max_execute_rows} 人"
         elif binding is None:
             action_plan = "allocate"
             new_expire_at = compute_expire_from(charge_time.date(), row.get("package_name"))
-            suggested_account = _preview_candidate()
+            suggested_account = _reserve_preview_candidate(preview_candidates, preview_reserved_candidate_ids)
             if suggested_account is None:
                 action_plan = "fail"
                 result_message = "当前无可用移动账号"
@@ -117,7 +131,11 @@ def preview_charge_batch(file):
             action_plan = "rebind"
             new_expire_at = compute_expire_from(charge_time.date(), row.get("package_name"))
             old_account = db.session.get(MobileAccount, binding.mobile_account_id)
-            suggested_account = _preview_candidate(exclude_batch_id=old_account.batch_id if old_account else None)
+            suggested_account = _reserve_preview_candidate(
+                preview_candidates,
+                preview_reserved_candidate_ids,
+                exclude_batch_id=old_account.batch_id if old_account else None,
+            )
             if suggested_account is None:
                 action_plan = "fail"
                 result_message = "当前无可用于换绑的新账号"
@@ -130,7 +148,7 @@ def preview_charge_batch(file):
             row_no=row_no,
             student_id=student.id if student else None,
             student_no=student_no,
-            student_name=row["name"],
+            student_name=row.get("name"),
             action_plan=action_plan,
             status="previewed" if action_plan != "fail" else "failed",
             old_mobile_account_id=binding.mobile_account_id if binding else None,
@@ -138,7 +156,7 @@ def preview_charge_batch(file):
             old_expire_at=binding.expire_at if binding else None,
             new_expire_at=new_expire_at,
             charge_time=charge_time,
-            package_name=row["package_name"],
+            package_name=row.get("package_name"),
             fee_amount=Decimal(str(row["fee_amount"])),
             result_message=result_message,
             raw_payload=_jsonable(row),
@@ -146,16 +164,32 @@ def preview_charge_batch(file):
         db.session.add(detail)
         preview_details.append(detail)
 
+    action_counts = {}
+    for d in preview_details:
+        action_counts[d.action_plan] = action_counts.get(d.action_plan, 0) + 1
+
     import_job.status = "validated" if parse_result.issues else "success"
     import_job.total_rows = len(rows) + len(parse_result.issues)
     import_job.success_rows = len(preview_details)
     import_job.failed_rows = len(parse_result.issues)
     import_job.finished_at = utcnow()
+    record_operation_event(
+        "charge_preview", "preview",
+        import_job_id=import_job.id,
+        operation_batch_id=operation_batch.id,
+        operator_id=user.id,
+        decision={"action_counts": action_counts, "total_rows": len(rows), "parse_issues": len(parse_result.issues)},
+    )
     db.session.commit()
     return operation_batch, import_job
 
 
 def execute_charge_batch(batch_id: int, idempotency_key: str):
+    with operation_trace("charge_execute"):
+        return _execute_charge_batch_inner(batch_id, idempotency_key)
+
+
+def _execute_charge_batch_inner(batch_id: int, idempotency_key: str):
     operation_batch = _lock_operation_batch(batch_id)
     _ensure_execute_ready(operation_batch, idempotency_key)
 
@@ -202,6 +236,16 @@ def execute_charge_batch(batch_id: int, idempotency_key: str):
         str(operation_batch.id),
         {"success_rows": success_count, "failed_rows": fail_count},
     )
+    record_operation_event(
+        "charge_execute", "execute",
+        operation_batch_id=operation_batch.id,
+        idempotency_key=idempotency_key,
+        decision={
+            "success_rows": success_count,
+            "failed_rows": fail_count,
+            "last_processed_charge_time": executed_charge_times and max(executed_charge_times).isoformat(),
+        },
+    )
     db.session.commit()
     export_job = _create_export_after_commit(operation_batch.id, export_rows)
     return operation_batch, export_job
@@ -237,26 +281,35 @@ def preview_full_students(file):
     release_count = 0
     conflict_count = 0
     checks_account_conflict = "mobile_account" in parse_result.available_columns
+    reserved_mobile_accounts: set[str] = set()
 
     for row_no, row in enumerate(parse_result.rows, start=2):
         student = db.session.execute(select(Student).filter_by(student_no=row["student_no"])).scalar_one_or_none()
         binding = _get_binding(student.id) if student else None
-        conflict = False
-        if checks_account_conflict and binding and row.get("mobile_account"):
-            bound_account = db.session.get(MobileAccount, binding.mobile_account_id)
-            conflict = bool(bound_account and bound_account.account != row["mobile_account"])
-        if row["expire_at"] and row["expire_at"] < date.today():
+        listed_mobile_account = row.get("mobile_account") if checks_account_conflict else None
+        if listed_mobile_account and listed_mobile_account in reserved_mobile_accounts:
+            plan = {
+                "action_plan": "conflict",
+                "conflict": True,
+                "conflict_message": "文件中同一移动账号被重复指定",
+            }
+        else:
+            plan = _preview_full_student_sync_plan(student, binding, row, checks_account_conflict)
+        if plan["action_plan"] == "release":
             release_count += 1
-        if conflict:
+        if plan["conflict"]:
             conflict_count += 1
+        elif listed_mobile_account:
+            reserved_mobile_accounts.add(listed_mobile_account)
         preview_rows.append(
             {
                 "row_no": row_no,
                 "student_no": row["student_no"],
                 "name": row["name"],
                 "expire_at": row["expire_at"].isoformat(),
-                "conflict": conflict,
-                "conflict_message": "名单账号与系统当前绑定不一致" if conflict else "",
+                "action_plan": plan["action_plan"],
+                "conflict": plan["conflict"],
+                "conflict_message": plan["conflict_message"],
             }
         )
 
@@ -265,21 +318,30 @@ def preview_full_students(file):
     import_job.success_rows = len(parse_result.rows)
     import_job.failed_rows = len(parse_result.issues)
     import_job.finished_at = utcnow()
+    record_operation_event(
+        "full_list_preview", "preview",
+        import_job_id=import_job.id,
+        operator_id=user.id,
+        decision={
+            "total_rows": len(parse_result.rows),
+            "release_count": release_count,
+            "conflict_count": conflict_count,
+            "parse_issues": len(parse_result.issues),
+        },
+    )
     db.session.commit()
     return {"preview": preview_rows, "release_count": release_count, "conflict_count": conflict_count}, import_job
 
 
 def execute_full_students(job_id: int, idempotency_key: str):
+    user = current_user()
+    if user is None:
+        raise ValueError("登录状态已失效，请重新登录后重试")
+
     import_job = db.session.get(ImportJob, job_id)
     if import_job is None:
         raise LookupError("导入任务不存在")
-    existing_batch = db.session.execute(
-        select(OperationBatch).filter(
-            OperationBatch.batch_type == "full_student_sync",
-            OperationBatch.source_import_job_id == import_job.id,
-            OperationBatch.status.in_(("executing", "success", "partial_success")),
-        )
-    ).scalar_one_or_none()
+    existing_batch = _find_existing_full_students_batch(import_job.id)
     if existing_batch is not None:
         raise ValueError("该完整名单导入任务已执行，禁止重复执行")
 
@@ -289,13 +351,111 @@ def execute_full_students(job_id: int, idempotency_key: str):
 
     operation_batch = OperationBatch(
         batch_type="full_student_sync",
-        status="previewed",
+        status="executing",
         source_import_job_id=import_job.id,
-        operator_id=current_user().id,
+        total_rows=len(parse_result.rows),
+        operator_id=user.id,
     )
     db.session.add(operation_batch)
     db.session.flush()
     _ensure_execute_ready(operation_batch, idempotency_key, is_new_batch=True)
+    import_job.status = "executing"
+    import_job.finished_at = None
+    db.session.commit()
+
+    with operation_trace("full_list_execute", source="api"):
+        return _run_full_students_execution(
+            operation_batch.id,
+            parse_result=parse_result,
+            audit_operator_id=user.id,
+        )
+
+
+def start_execute_full_students_async(job_id: int, idempotency_key: str, operator_id: int, app) -> tuple[OperationBatch, bool]:
+    import_job = db.session.get(ImportJob, job_id)
+    if import_job is None:
+        raise LookupError("导入任务不存在")
+
+    existing_batch = _find_existing_full_students_batch(import_job.id)
+    if existing_batch is not None:
+        if existing_batch.status == "executing":
+            return existing_batch, False
+        raise ValueError("该完整名单导入任务已执行，禁止重复执行")
+
+    operation_batch = OperationBatch(
+        batch_type="full_student_sync",
+        status="executing",
+        source_import_job_id=import_job.id,
+        total_rows=max(import_job.success_rows, 0),
+        operator_id=operator_id,
+    )
+    db.session.add(operation_batch)
+    db.session.flush()
+    _ensure_execute_ready(operation_batch, idempotency_key, is_new_batch=True)
+    import_job.status = "executing"
+    import_job.finished_at = None
+    db.session.commit()
+
+    trace_id = str(_uuid.uuid4())
+    worker = threading.Thread(
+        target=_run_full_students_execution_background,
+        args=(app, operation_batch.id, trace_id),
+        daemon=True,
+        name=f"full-students-{operation_batch.id}",
+    )
+    worker.start()
+    return operation_batch, True
+
+
+def _run_full_students_execution_background(app, operation_batch_id: int, trace_id: str | None = None) -> None:
+    with app.app_context():
+        if trace_id:
+            set_trace_context(trace_id, source="api")
+        try:
+            _run_full_students_execution(operation_batch_id)
+        except Exception:  # noqa: BLE001
+            db.session.rollback()
+            operation_batch = db.session.get(OperationBatch, operation_batch_id)
+            import_job = db.session.get(ImportJob, operation_batch.source_import_job_id) if operation_batch else None
+            if operation_batch:
+                operation_batch.status = "partial_success" if operation_batch.success_rows > 0 else "failed"
+                operation_batch.executed_at = utcnow()
+            if import_job:
+                import_job.status = "partial_success" if operation_batch and operation_batch.success_rows > 0 else "failed"
+                import_job.finished_at = utcnow()
+            db.session.commit()
+            app.logger.exception("full student async execute failed: operation_batch_id=%s", operation_batch_id)
+        finally:
+            clear_trace_context()
+            db.session.remove()
+
+
+def _run_full_students_execution(
+    operation_batch_id: int,
+    parse_result=None,
+    audit_operator_id: int | None = None,
+) -> dict:
+    operation_batch = db.session.get(OperationBatch, operation_batch_id)
+    if operation_batch is None:
+        raise LookupError("操作批次不存在")
+    if operation_batch.source_import_job_id is None:
+        raise ValueError("操作批次缺少导入任务关联")
+
+    import_job = db.session.get(ImportJob, operation_batch.source_import_job_id)
+    if import_job is None:
+        raise LookupError("导入任务不存在")
+
+    if parse_result is None:
+        parse_result = validate_excel(import_job.stored_path, "full_student_list")
+    if parse_result.has_fatal_errors:
+        raise ValueError("完整名单模板校验失败")
+
+    total_rows = len(parse_result.rows)
+    operation_batch.status = "executing"
+    operation_batch.total_rows = total_rows
+    operation_batch.success_rows = 0
+    operation_batch.failed_rows = 0
+    db.session.commit()
 
     success_rows = 0
     released_rows = 0
@@ -309,29 +469,30 @@ def execute_full_students(job_id: int, idempotency_key: str):
             student_no=row["student_no"],
             student_name=row["name"],
             action_plan="sync",
-            status="previewed",
+            status="executing",
             new_expire_at=row["expire_at"],
             raw_payload=_jsonable(row),
         )
         db.session.add(detail)
-        try:
-            with db.session.begin_nested():
-                released, conflict = _execute_full_student_detail(detail, row, checks_account_conflict)
-                if conflict:
-                    conflict_rows += 1
-                    detail.status = "failed"
-                    detail.result_message = "名单账号与系统当前绑定不一致，已生成告警"
-                else:
-                    success_rows += 1
-                    if released:
-                        released_rows += 1
-                    detail.status = "success"
-                    detail.result_message = "执行成功"
-        except Exception as exc:  # noqa: BLE001
+        released, conflict, conflict_message = _execute_full_student_detail(detail, row, checks_account_conflict)
+        if conflict:
             detail.status = "failed"
-            detail.result_message = str(exc)
+            detail.result_message = conflict_message or "完整名单同步冲突，已生成告警"
             conflict_rows += 1
+        else:
+            success_rows += 1
+            if released:
+                released_rows += 1
+            detail.status = "success"
+            detail.result_message = "执行成功"
 
+        if index % FULL_STUDENT_PROGRESS_COMMIT_INTERVAL == 0:
+            operation_batch.success_rows = success_rows
+            operation_batch.failed_rows = conflict_rows
+            db.session.commit()
+
+    operation_batch.success_rows = success_rows
+    operation_batch.failed_rows = conflict_rows
     import_job.status = "success" if conflict_rows == 0 else "partial_success"
     import_job.success_rows = success_rows
     import_job.failed_rows = conflict_rows
@@ -342,6 +503,19 @@ def execute_full_students(job_id: int, idempotency_key: str):
         "import_job",
         str(import_job.id),
         {"released_rows": released_rows, "conflicts": conflict_rows},
+        operator_id=audit_operator_id if audit_operator_id is not None else operation_batch.operator_id,
+    )
+    record_operation_event(
+        "full_list_execute", "execute",
+        import_job_id=import_job.id,
+        operation_batch_id=operation_batch.id,
+        operator_id=audit_operator_id if audit_operator_id is not None else operation_batch.operator_id,
+        decision={
+            "total_rows": total_rows,
+            "success_rows": success_rows,
+            "released_rows": released_rows,
+            "conflict_rows": conflict_rows,
+        },
     )
     db.session.commit()
     return {
@@ -352,7 +526,24 @@ def execute_full_students(job_id: int, idempotency_key: str):
     }
 
 
+def _find_existing_full_students_batch(import_job_id: int) -> OperationBatch | None:
+    return db.session.execute(
+        select(OperationBatch)
+        .filter(
+            OperationBatch.batch_type == "full_student_sync",
+            OperationBatch.source_import_job_id == import_job_id,
+            OperationBatch.status.in_(("executing", "success", "partial_success")),
+        )
+        .order_by(OperationBatch.id.desc())
+    ).scalars().first()
+
+
 def manual_rebind(student_no: str, new_account_id: int, old_account_action: str, remark: str | None, idempotency_key: str):
+    with operation_trace("manual_rebind"):
+        return _manual_rebind_inner(student_no, new_account_id, old_account_action, remark, idempotency_key)
+
+
+def _manual_rebind_inner(student_no: str, new_account_id: int, old_account_action: str, remark: str | None, idempotency_key: str):
     student = db.session.execute(select(Student).filter_by(student_no=student_no)).scalar_one_or_none()
     if student is None:
         raise LookupError("学号不存在")
@@ -394,6 +585,10 @@ def manual_rebind(student_no: str, new_account_id: int, old_account_action: str,
         if new_account.status != "available":
             raise ValueError("新账号不可用")
 
+        old_account_before = _account_snapshot(old_account)
+        new_account_before = _account_snapshot(new_account)
+        binding_before = _binding_snapshot(binding)
+
         if old_account_action == "disable":
             old_account.status = "disabled"
             old_account.disabled_reason = remark or "manual_rebind"
@@ -429,8 +624,34 @@ def manual_rebind(student_no: str, new_account_id: int, old_account_action: str,
         detail.result_message = "执行成功"
         detail.export_included = True
 
+        record_entity_change("mobile_account", old_account.id, "update",
+            before=old_account_before, after=_account_snapshot(old_account),
+            reason="manual_rebind", student_id=student.id, mobile_account_id=old_account.id)
+        record_entity_change("mobile_account", new_account.id, "update",
+            before=new_account_before, after=_account_snapshot(new_account),
+            reason="manual_rebind", student_id=student.id, mobile_account_id=new_account.id)
+        record_entity_change("current_binding", binding.id, "update",
+            before=binding_before, after=_binding_snapshot(binding),
+            reason="manual_rebind", student_id=student.id)
+
     _finalize_operation_batch(operation_batch, 1, 0)
     write_audit("manual_rebind", "student", str(student.id), {"new_account_id": new_account.id})
+    record_operation_event(
+        "manual_rebind", "execute",
+        operation_batch_id=operation_batch.id,
+        student_id=student.id,
+        student_no=student.student_no,
+        mobile_account_id=new_account.id,
+        mobile_account=new_account.account,
+        idempotency_key=idempotency_key,
+        decision={
+            "old_account_id": old_account.id,
+            "old_account": old_account.account,
+            "old_account_action": old_account_action,
+            "new_account_id": new_account.id,
+            "new_account": new_account.account,
+        },
+    )
     db.session.commit()
     export_job = _create_export_after_commit(operation_batch.id, [{"学号": student.student_no, "移动账户": new_account.account}])
     return operation_batch, student, old_account, new_account, export_job
@@ -441,6 +662,8 @@ def preview_batch_rebind(batch_id: int):
     if batch is None:
         raise LookupError("批次不存在")
     rows = []
+    preview_candidates = _list_preview_candidates()
+    preview_reserved_candidate_ids: set[int] = set()
     affected = (
         db.session.execute(
             select(CurrentBinding, Student, MobileAccount)
@@ -451,7 +674,11 @@ def preview_batch_rebind(batch_id: int):
         .all()
     )
     for binding, student, old_account in affected:
-        candidate = _preview_candidate(exclude_batch_id=batch.id)
+        candidate = _reserve_preview_candidate(
+            preview_candidates,
+            preview_reserved_candidate_ids,
+            exclude_batch_id=batch.id,
+        )
         rows.append(
             {
                 "student_no": student.student_no,
@@ -463,10 +690,25 @@ def preview_batch_rebind(batch_id: int):
                 "message": "可换绑" if candidate else "无可用新账号",
             }
         )
+    record_operation_event(
+        "batch_rebind_preview", "preview",
+        payload={"batch_id": batch_id},
+        decision={
+            "affected_count": len(rows),
+            "can_execute_count": sum(1 for r in rows if r["can_execute"]),
+            "no_candidate_count": sum(1 for r in rows if not r["can_execute"]),
+        },
+    )
+    db.session.commit()
     return batch, rows
 
 
 def execute_batch_rebind(batch_id: int, idempotency_key: str):
+    with operation_trace("batch_rebind_execute"):
+        return _execute_batch_rebind_inner(batch_id, idempotency_key)
+
+
+def _execute_batch_rebind_inner(batch_id: int, idempotency_key: str):
     batch = db.session.get(AccountBatch, batch_id)
     if batch is None:
         raise LookupError("批次不存在")
@@ -521,6 +763,10 @@ def execute_batch_rebind(batch_id: int, idempotency_key: str):
                 if candidate is None:
                     raise ValueError("无可用新账号")
 
+                old_account_before = _account_snapshot(locked_old_account)
+                candidate_before = _account_snapshot(candidate)
+                binding_before = _binding_snapshot(locked_binding)
+
                 candidate.status = "assigned"
                 candidate.last_assigned_at = utcnow()
                 locked_old_account.status = "expired"
@@ -546,6 +792,16 @@ def execute_batch_rebind(batch_id: int, idempotency_key: str):
                 detail.export_included = True
                 export_rows.append({"学号": student.student_no, "移动账户": candidate.account})
                 success_rows += 1
+
+                record_entity_change("mobile_account", locked_old_account.id, "update",
+                    before=old_account_before, after=_account_snapshot(locked_old_account),
+                    reason="batch_rebind", operation_batch_id=operation_batch.id, student_id=student.id)
+                record_entity_change("mobile_account", candidate.id, "update",
+                    before=candidate_before, after=_account_snapshot(candidate),
+                    reason="batch_rebind", operation_batch_id=operation_batch.id, student_id=student.id)
+                record_entity_change("current_binding", locked_binding.id, "update",
+                    before=binding_before, after=_binding_snapshot(locked_binding),
+                    reason="batch_rebind", operation_batch_id=operation_batch.id, student_id=student.id)
         except Exception as exc:  # noqa: BLE001
             detail.status = "failed"
             detail.result_message = str(exc)
@@ -557,6 +813,13 @@ def execute_batch_rebind(batch_id: int, idempotency_key: str):
         "account_batch",
         str(batch.id),
         {"success_rows": success_rows, "failed_rows": failed_rows},
+    )
+    record_operation_event(
+        "batch_rebind_execute", "execute",
+        operation_batch_id=operation_batch.id,
+        idempotency_key=idempotency_key,
+        payload={"batch_id": batch.id, "batch_code": batch.batch_code},
+        decision={"success_rows": success_rows, "failed_rows": failed_rows},
     )
     db.session.commit()
     export_job = _create_export_after_commit(operation_batch.id, export_rows)
@@ -627,6 +890,7 @@ def _execute_charge_detail(detail: OperationBatchDetail):
         candidate = _reserve_candidate()
         if candidate is None:
             raise ValueError("当前无可用移动账号")
+        candidate_before = _account_snapshot(candidate)
         candidate.status = "assigned"
         candidate.last_assigned_at = utcnow()
         binding = CurrentBinding(
@@ -638,6 +902,7 @@ def _execute_charge_detail(detail: OperationBatchDetail):
             expire_at=detail.new_expire_at,
         )
         db.session.add(binding)
+        db.session.flush()
         db.session.add(
             BindingHistory(
                 student_id=student.id,
@@ -649,6 +914,12 @@ def _execute_charge_detail(detail: OperationBatchDetail):
         )
         detail.new_mobile_account_id = candidate.id
         detail.export_included = True
+        record_entity_change("mobile_account", candidate.id, "update",
+            before=candidate_before, after=_account_snapshot(candidate),
+            reason="charge_allocate", student_id=student.id, mobile_account_id=candidate.id)
+        record_entity_change("current_binding", binding.id, "insert",
+            after=_binding_snapshot(binding),
+            reason="charge_allocate", student_id=student.id, mobile_account_id=candidate.id)
         return {"学号": student.student_no, "移动账户": candidate.account}, charge_time
 
     if detail.action_plan == "renew":
@@ -678,6 +949,9 @@ def _execute_charge_detail(detail: OperationBatchDetail):
         candidate = _reserve_candidate(exclude_batch_id=old_account.batch_id)
         if candidate is None:
             raise ValueError("当前无可用于换绑的新账号")
+        old_account_before = _account_snapshot(old_account)
+        candidate_before = _account_snapshot(candidate)
+        binding_before = _binding_snapshot(binding)
         candidate.status = "assigned"
         candidate.last_assigned_at = utcnow()
         old_account.status = "available"
@@ -700,45 +974,42 @@ def _execute_charge_detail(detail: OperationBatchDetail):
         binding.expire_at = detail.new_expire_at
         detail.new_mobile_account_id = candidate.id
         detail.export_included = True
+        record_entity_change("mobile_account", old_account.id, "update",
+            before=old_account_before, after=_account_snapshot(old_account),
+            reason="charge_rebind", student_id=student.id, mobile_account_id=old_account.id)
+        record_entity_change("mobile_account", candidate.id, "update",
+            before=candidate_before, after=_account_snapshot(candidate),
+            reason="charge_rebind", student_id=student.id, mobile_account_id=candidate.id)
+        record_entity_change("current_binding", binding.id, "update",
+            before=binding_before, after=_binding_snapshot(binding),
+            reason="charge_rebind", student_id=student.id)
         return {"学号": student.student_no, "移动账户": candidate.account}, charge_time
 
     raise ValueError("不支持的执行动作")
 
 
-def _execute_full_student_detail(detail: OperationBatchDetail, row: dict, checks_account_conflict: bool) -> tuple[bool, bool]:
+def _execute_full_student_detail(
+    detail: OperationBatchDetail, row: dict, checks_account_conflict: bool
+) -> tuple[bool, bool, str | None]:
     student = _find_or_create_student(row["student_no"], row["name"])
     student.source_expire_at = row["expire_at"]
     detail.student_id = student.id
     detail.student_name = student.name
 
     binding = _get_binding(student.id, for_update=True)
-    if binding is None:
-        return False, False
-
-    old_account = db.session.execute(
-        select(MobileAccount).filter_by(id=binding.mobile_account_id).with_for_update()
-    ).scalar_one()
-
-    if checks_account_conflict and row.get("mobile_account") and old_account.account != row["mobile_account"]:
-        db.session.add(
-            AlertRecord(
-                type="binding_conflict",
-                level="warning",
-                title="完整名单与当前绑定不一致",
-                content=f"学号 {student.student_no} 在完整名单中的账号与系统当前绑定不一致",
-                related_student_id=student.id,
-            )
-        )
-        return False, True
-
-    old_expire_at = binding.expire_at
-    binding.expire_at = row["expire_at"]
-    detail.old_mobile_account_id = old_account.id
-    detail.new_mobile_account_id = old_account.id
-    detail.old_expire_at = old_expire_at
-    detail.new_expire_at = row["expire_at"]
-
     if row["expire_at"] < date.today():
+        if binding is None:
+            return False, False, None
+        old_account = db.session.execute(
+            select(MobileAccount).filter_by(id=binding.mobile_account_id).with_for_update()
+        ).scalar_one()
+        old_expire_at = binding.expire_at
+        detail.old_mobile_account_id = old_account.id
+        detail.new_mobile_account_id = None
+        detail.old_expire_at = old_expire_at
+        detail.new_expire_at = row["expire_at"]
+        account_before = _account_snapshot(old_account)
+        binding_before = _binding_snapshot(binding)
         old_account.status = "available"
         old_account.disabled_reason = None
         db.session.add(
@@ -753,8 +1024,142 @@ def _execute_full_student_detail(detail: OperationBatchDetail, row: dict, checks
             )
         )
         db.session.delete(binding)
-        return True, False
+        record_entity_change("mobile_account", old_account.id, "update",
+            before=account_before, after=_account_snapshot(old_account),
+            reason="full_list_release", student_id=student.id, mobile_account_id=old_account.id)
+        record_entity_change("current_binding", binding_before["id"], "delete",
+            before=binding_before,
+            reason="full_list_release", student_id=student.id)
+        return True, False, None
 
+    listed_mobile_account = row.get("mobile_account") if checks_account_conflict else None
+    if listed_mobile_account:
+        target_account = db.session.execute(
+            select(MobileAccount).filter_by(account=listed_mobile_account).with_for_update()
+        ).scalar_one_or_none()
+        if target_account is None:
+            _create_full_student_conflict_alert(student, "名单中的移动账号不存在于账号池")
+            return False, True, "名单中的移动账号不存在于账号池，已生成告警"
+
+        target_binding = _get_binding_by_mobile_account(target_account.id, for_update=True)
+        if target_binding and target_binding.student_id != student.id:
+            _create_full_student_conflict_alert(student, "名单中的移动账号已绑定给其他学生")
+            return False, True, "名单中的移动账号已绑定给其他学生，已生成告警"
+
+        if target_account.status in {"disabled", "expired"}:
+            _create_full_student_conflict_alert(student, "名单中的移动账号当前状态不可用")
+            return False, True, "名单中的移动账号当前状态不可用，已生成告警"
+
+        if binding is None:
+            target_account_before = _account_snapshot(target_account)
+            target_account.status = "assigned"
+            target_account.last_assigned_at = utcnow()
+            new_binding = CurrentBinding(
+                student_id=student.id,
+                mobile_account_id=target_account.id,
+                bind_source="full_student_list",
+                bind_type="sync_bind",
+                bind_at=utcnow(),
+                expire_at=row["expire_at"],
+            )
+            db.session.add(new_binding)
+            db.session.flush()
+            db.session.add(
+                BindingHistory(
+                    student_id=student.id,
+                    old_mobile_account_id=None,
+                    new_mobile_account_id=target_account.id,
+                    action_type="sync_bind",
+                    old_expire_at=None,
+                    new_expire_at=row["expire_at"],
+                    detail_json={"reason": "full_student_list"},
+                )
+            )
+            detail.new_mobile_account_id = target_account.id
+            detail.new_expire_at = row["expire_at"]
+            record_entity_change("mobile_account", target_account.id, "update",
+                before=target_account_before, after=_account_snapshot(target_account),
+                reason="full_list_sync_bind", student_id=student.id, mobile_account_id=target_account.id)
+            record_entity_change("current_binding", new_binding.id, "insert",
+                after=_binding_snapshot(new_binding),
+                reason="full_list_sync_bind", student_id=student.id, mobile_account_id=target_account.id)
+            return False, False, None
+
+        old_account = db.session.execute(
+            select(MobileAccount).filter_by(id=binding.mobile_account_id).with_for_update()
+        ).scalar_one()
+        old_expire_at = binding.expire_at
+        detail.old_mobile_account_id = old_account.id
+        detail.old_expire_at = old_expire_at
+
+        if old_account.id != target_account.id:
+            old_account_before = _account_snapshot(old_account)
+            target_account_before = _account_snapshot(target_account)
+            binding_before = _binding_snapshot(binding)
+            old_account.status = "available"
+            old_account.disabled_reason = None
+            target_account.status = "assigned"
+            target_account.last_assigned_at = utcnow()
+            binding.mobile_account_id = target_account.id
+            binding.bind_source = "full_student_list"
+            binding.bind_type = "sync_rebind"
+            binding.bind_at = utcnow()
+            binding.expire_at = row["expire_at"]
+            db.session.add(
+                BindingHistory(
+                    student_id=student.id,
+                    old_mobile_account_id=old_account.id,
+                    new_mobile_account_id=target_account.id,
+                    action_type="sync_rebind",
+                    old_expire_at=old_expire_at,
+                    new_expire_at=row["expire_at"],
+                    detail_json={"reason": "full_student_list"},
+                )
+            )
+            detail.new_mobile_account_id = target_account.id
+            detail.new_expire_at = row["expire_at"]
+            record_entity_change("mobile_account", old_account.id, "update",
+                before=old_account_before, after=_account_snapshot(old_account),
+                reason="full_list_sync_rebind", student_id=student.id, mobile_account_id=old_account.id)
+            record_entity_change("mobile_account", target_account.id, "update",
+                before=target_account_before, after=_account_snapshot(target_account),
+                reason="full_list_sync_rebind", student_id=student.id, mobile_account_id=target_account.id)
+            record_entity_change("current_binding", binding.id, "update",
+                before=binding_before, after=_binding_snapshot(binding),
+                reason="full_list_sync_rebind", student_id=student.id)
+            return False, False, None
+
+        binding_before = _binding_snapshot(binding)
+        old_account.status = "assigned"
+        binding.expire_at = row["expire_at"]
+        db.session.add(
+            BindingHistory(
+                student_id=student.id,
+                old_mobile_account_id=old_account.id,
+                new_mobile_account_id=old_account.id,
+                action_type="sync_expire_at",
+                old_expire_at=old_expire_at,
+                new_expire_at=row["expire_at"],
+                detail_json={"reason": "full_student_list"},
+            )
+        )
+        detail.new_mobile_account_id = old_account.id
+        detail.new_expire_at = row["expire_at"]
+        record_entity_change("current_binding", binding.id, "update",
+            before=binding_before, after=_binding_snapshot(binding),
+            reason="full_list_sync_expire_at", student_id=student.id)
+        return False, False, None
+
+    if binding is None:
+        return False, False, None
+
+    old_account = db.session.execute(
+        select(MobileAccount).filter_by(id=binding.mobile_account_id).with_for_update()
+    ).scalar_one()
+    old_expire_at = binding.expire_at
+    binding_before = _binding_snapshot(binding)
+    old_account.status = "assigned"
+    binding.expire_at = row["expire_at"]
     db.session.add(
         BindingHistory(
             student_id=student.id,
@@ -766,7 +1171,54 @@ def _execute_full_student_detail(detail: OperationBatchDetail, row: dict, checks
             detail_json={"reason": "full_student_list"},
         )
     )
-    return False, False
+    detail.old_mobile_account_id = old_account.id
+    detail.new_mobile_account_id = old_account.id
+    detail.old_expire_at = old_expire_at
+    detail.new_expire_at = row["expire_at"]
+    record_entity_change("current_binding", binding.id, "update",
+        before=binding_before, after=_binding_snapshot(binding),
+        reason="full_list_sync_expire_at", student_id=student.id)
+    return False, False, None
+
+
+def _preview_full_student_sync_plan(student: Student | None, binding: CurrentBinding | None, row: dict, checks_account: bool) -> dict:
+    if row["expire_at"] < date.today():
+        if binding is None:
+            return {"action_plan": "noop", "conflict": False, "conflict_message": ""}
+        return {"action_plan": "release", "conflict": False, "conflict_message": ""}
+
+    listed_mobile_account = row.get("mobile_account") if checks_account else None
+    if not listed_mobile_account:
+        if binding is None:
+            return {"action_plan": "noop", "conflict": False, "conflict_message": ""}
+        return {"action_plan": "sync_expire_at", "conflict": False, "conflict_message": ""}
+
+    target_account = db.session.execute(select(MobileAccount).filter_by(account=listed_mobile_account)).scalar_one_or_none()
+    if target_account is None:
+        return {"action_plan": "conflict", "conflict": True, "conflict_message": "名单中的移动账号不存在于账号池"}
+    target_binding = _get_binding_by_mobile_account(target_account.id)
+    if target_binding and (student is None or target_binding.student_id != student.id):
+        return {"action_plan": "conflict", "conflict": True, "conflict_message": "名单中的移动账号已绑定给其他学生"}
+    if target_account.status in {"disabled", "expired"}:
+        return {"action_plan": "conflict", "conflict": True, "conflict_message": "名单中的移动账号当前状态不可用"}
+    if binding is None:
+        return {"action_plan": "bind", "conflict": False, "conflict_message": ""}
+    current_account = db.session.get(MobileAccount, binding.mobile_account_id)
+    if current_account and current_account.id == target_account.id:
+        return {"action_plan": "sync_expire_at", "conflict": False, "conflict_message": ""}
+    return {"action_plan": "rebind", "conflict": False, "conflict_message": ""}
+
+
+def _create_full_student_conflict_alert(student: Student, message: str) -> None:
+    db.session.add(
+        AlertRecord(
+            type="binding_conflict",
+            level="warning",
+            title="完整名单同步冲突",
+            content=f"学号 {student.student_no} {message}",
+            related_student_id=student.id,
+        )
+    )
 
 
 def _lock_operation_batch(batch_id: int) -> OperationBatch:
@@ -830,6 +1282,31 @@ def _preview_candidate(exclude_batch_id: int | None = None):
     return db.session.execute(query).scalars().first()
 
 
+def _list_preview_candidates() -> list[MobileAccount]:
+    query = (
+        select(MobileAccount)
+        .join(AccountBatch, AccountBatch.id == MobileAccount.batch_id)
+        .filter(MobileAccount.status == "available", AccountBatch.status == "active")
+        .order_by(AccountBatch.priority.desc(), AccountBatch.id.desc(), MobileAccount.id.asc())
+    )
+    return db.session.execute(query).scalars().all()
+
+
+def _reserve_preview_candidate(
+    candidates: list[MobileAccount],
+    reserved_ids: set[int],
+    exclude_batch_id: int | None = None,
+) -> MobileAccount | None:
+    for candidate in candidates:
+        if candidate.id in reserved_ids:
+            continue
+        if exclude_batch_id is not None and candidate.batch_id == exclude_batch_id:
+            continue
+        reserved_ids.add(candidate.id)
+        return candidate
+    return None
+
+
 def _find_or_create_student(student_no: str, name: str | None):
     student = db.session.execute(select(Student).filter_by(student_no=student_no)).scalar_one_or_none()
     if student is None:
@@ -843,6 +1320,13 @@ def _find_or_create_student(student_no: str, name: str | None):
 
 def _get_binding(student_id: int, for_update: bool = False):
     query = select(CurrentBinding).filter_by(student_id=student_id)
+    if for_update:
+        query = query.with_for_update()
+    return db.session.execute(query).scalar_one_or_none()
+
+
+def _get_binding_by_mobile_account(mobile_account_id: int, for_update: bool = False):
+    query = select(CurrentBinding).filter_by(mobile_account_id=mobile_account_id)
     if for_update:
         query = query.with_for_update()
     return db.session.execute(query).scalar_one_or_none()

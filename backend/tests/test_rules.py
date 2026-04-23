@@ -1,5 +1,8 @@
 import pandas as pd
 
+from datetime import datetime
+
+from app.services import date_service
 from app.services.date_service import compute_expire_from, package_days
 from app.services.storage_service import create_export_file
 
@@ -28,3 +31,8 @@ def test_export_file_names_do_not_collide(app):
     rows2 = pd.read_excel(path2).to_dict(orient="records")
     assert rows1[0]["学号"] == 1
     assert rows2[0]["学号"] == 2
+
+
+def test_localnow_uses_system_timezone(monkeypatch):
+    monkeypatch.setattr(date_service, "utcnow", lambda: datetime(2026, 4, 21, 1, 9, 0))
+    assert date_service.localnow().strftime("%Y-%m-%d %H:%M:%S") == "2026-04-21 09:09:00"

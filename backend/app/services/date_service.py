@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from flask import has_app_context
 
@@ -9,6 +10,20 @@ from .config_service import get_config_value
 
 def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def localnow() -> datetime:
+    base_utc = utcnow().replace(tzinfo=UTC)
+    timezone_name = "Asia/Shanghai"
+    if has_app_context():
+        configured = get_config_value("system.timezone", "Asia/Shanghai")
+        if configured:
+            timezone_name = str(configured)
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:  # noqa: BLE001
+        tz = ZoneInfo("Asia/Shanghai")
+    return base_utc.astimezone(tz).replace(tzinfo=None)
 
 
 def package_days(package_name: str | None) -> int:
