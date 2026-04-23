@@ -71,6 +71,22 @@ cp .env.example .env
 docker compose up --build
 ```
 
+如果需要在宿主机直接执行后端初始化命令，不要使用 Compose 容器内部的主机名 `postgres`。
+请改用映射出来的本地端口：
+
+```bash
+cd backend
+export DATABASE_URL="postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD}@localhost:${ABS_POSTGRES_PORT:-5432}/${ABS_DB_NAME}"
+../.venv/bin/flask --app wsgi:app init-db
+```
+
+如果你希望沿用 Compose 默认的 `postgres` 主机名，请在容器内执行：
+
+```bash
+docker compose exec backend flask --app wsgi:app init-db
+docker compose exec backend flask --app wsgi:app seed-admin --password your_password
+```
+
 启动后访问：
 
 - 前端：`http://localhost:8080`

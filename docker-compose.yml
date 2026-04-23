@@ -24,7 +24,7 @@ services:
       dockerfile: backend/Dockerfile
     container_name: abs_backend
     environment:
-      DATABASE_URL: postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD}@postgres:5432/${ABS_DB_NAME}
+      DATABASE_URL: postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD_URLENC:?ABS_DB_PASSWORD_URLENC is required for URL-safe DB password}@postgres:5432/${ABS_DB_NAME}
       SECRET_KEY: ${ABS_SECRET_KEY:?ABS_SECRET_KEY is required}
       SESSION_COOKIE_SECURE: ${ABS_SESSION_COOKIE_SECURE:-true}
       STORAGE_ROOT: /app/storage
@@ -48,7 +48,7 @@ services:
       dockerfile: backend/Dockerfile
     container_name: abs_scheduler
     environment:
-      DATABASE_URL: postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD}@postgres:5432/${ABS_DB_NAME}
+      DATABASE_URL: postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD_URLENC:?ABS_DB_PASSWORD_URLENC is required for URL-safe DB password}@postgres:5432/${ABS_DB_NAME}
       SECRET_KEY: ${ABS_SECRET_KEY:?ABS_SECRET_KEY is required}
       STORAGE_ROOT: /app/storage
       TZ: Asia/Shanghai
@@ -78,7 +78,7 @@ services:
     container_name: abs_auditor
     environment:
       # The auditor reads the business DB but only writes audit result tables.
-      AUDIT_DATABASE_URL: postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD}@postgres:5432/${ABS_DB_NAME}
+      AUDIT_DATABASE_URL: postgresql+psycopg://${ABS_DB_USER}:${ABS_DB_PASSWORD_URLENC:?ABS_DB_PASSWORD_URLENC is required for URL-safe DB password}@postgres:5432/${ABS_DB_NAME}
       # SiliconFlow OpenAI-compatible endpoint for second-layer LLM reporting.
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-占位符}
       AUDIT_LLM_BASE_URL: ${AUDIT_LLM_BASE_URL:-https://api.siliconflow.cn/v1}
