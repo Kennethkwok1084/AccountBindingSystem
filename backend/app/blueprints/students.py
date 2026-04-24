@@ -224,6 +224,7 @@ def export_students():
         filename_prefix="学生台账",
         columns=["学号", "姓名", "当前账号", "绑定到期", "来源到期", "预期到期"],
     )
+    db.session.commit()
     return success(
         {
             "export_job": {
@@ -348,6 +349,7 @@ def export_student_history(student_no: str):
         filename_prefix="学生台账历史",
         columns=["学号", "姓名", "时间", "动作", "旧账号ID", "旧账号", "新账号ID", "新账号"],
     )
+    db.session.commit()
     return success(
         {
             "export_job": {
@@ -451,6 +453,7 @@ def export_account_history(account: str):
         filename_prefix="账号台账历史",
         columns=["账号", "时间", "动作", "学号", "姓名", "旧账号ID", "旧账号", "新账号ID", "新账号"],
     )
+    db.session.commit()
     return success(
         {
             "export_job": {

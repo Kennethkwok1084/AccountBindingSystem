@@ -203,6 +203,14 @@ def test_student_ledger_export_creates_excel_job(client, auth_headers):
     assert list(dataframe.columns) == ["学号", "姓名", "当前账号", "绑定到期", "来源到期", "预期到期"]
     assert str(dataframe.iloc[0]["学号"]) == "2023010001"
 
+    exports_response = client.get(
+        f"/api/v1/exports?keyword={response.json['data']['export_job']['filename']}",
+        headers=auth_headers,
+    )
+    assert exports_response.status_code == 200
+    assert exports_response.json["data"]["total"] == 1
+    assert exports_response.json["data"]["items"][0]["filename"] == response.json["data"]["export_job"]["filename"]
+
 
 def test_account_ledger_export_creates_excel_job(client, auth_headers):
     client.post(

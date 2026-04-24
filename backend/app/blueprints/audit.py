@@ -6,6 +6,7 @@ import json
 from flask import Blueprint, request
 from sqlalchemy import asc, desc, or_
 
+from ..extensions import db
 from ..models import AuditLog
 from ..responses import error, success
 from ..security import require_csrf, require_session
@@ -150,6 +151,7 @@ def export_audit_logs():
         filename_prefix="审计日志",
         columns=["ID", "动作", "资源类型", "资源ID", "操作人ID", "详情", "时间"],
     )
+    db.session.commit()
     return success(
         {
             "export_job": {

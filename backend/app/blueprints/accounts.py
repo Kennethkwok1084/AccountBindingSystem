@@ -155,6 +155,7 @@ def export_mobile_accounts():
         filename_prefix="账号台账",
         columns=["账号", "状态", "批次编码", "批次类型", "批次状态", "批次到期日", "最近分配时间"],
     )
+    db.session.commit()
     return success(
         {
             "export_job": {
