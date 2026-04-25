@@ -95,6 +95,7 @@ async function doSubmit() {
       studentNo: payload.data.student_no,
       oldAccount: payload.data.old_account,
       newAccount: payload.data.new_account,
+      exportId: payload.data.export_job?.id || "",
       exportFilename: payload.data.export_job?.filename || "导出文件",
     };
     studentNo.value = "";
@@ -111,7 +112,7 @@ function goToExports() {
   }
   router.push({
     path: "/exports",
-    query: { keyword: successState.value.exportFilename },
+    query: { export_id: successState.value.exportId || "", keyword: successState.value.exportFilename },
   });
 }
 

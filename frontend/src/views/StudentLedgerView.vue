@@ -278,6 +278,7 @@ async function exportHistory() {
       }),
     });
     historyExportState.value = {
+      id: payload.data.export_job.id,
       filename: payload.data.export_job.filename,
       rowCount: payload.data.export_job.row_count,
     };
@@ -304,6 +305,7 @@ async function exportStudents() {
       }),
     });
     exportState.value = {
+      id: payload.data.export_job.id,
       filename: payload.data.export_job.filename,
       rowCount: payload.data.export_job.row_count,
     };
@@ -316,11 +318,11 @@ async function exportStudents() {
 }
 
 function goToExports() {
-  router.push({ path: "/exports", query: { keyword: exportState.value?.filename || "" } });
+  router.push({ path: "/exports", query: { export_id: exportState.value?.id || "", keyword: exportState.value?.filename || "" } });
 }
 
 function goToHistoryExports() {
-  router.push({ path: "/exports", query: { keyword: historyExportState.value?.filename || "" } });
+  router.push({ path: "/exports", query: { export_id: historyExportState.value?.id || "", keyword: historyExportState.value?.filename || "" } });
 }
 
 onMounted(loadStudents);

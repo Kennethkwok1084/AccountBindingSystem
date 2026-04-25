@@ -41,6 +41,7 @@ def _parse_datetime_bound(value: str | None, end_of_day: bool = False):
 @bp.get("/exports")
 @require_session
 def exports():
+    export_id = request.args.get("export_id", type=int)
     keyword = str(request.args.get("keyword") or "").strip()
     created_from = _parse_datetime_bound(request.args.get("created_from"))
     created_to = _parse_datetime_bound(request.args.get("created_to"), end_of_day=True)
@@ -49,6 +50,8 @@ def exports():
     page, page_size = _paging()
 
     query = ExportJob.query
+    if export_id:
+        query = query.filter(ExportJob.id == export_id)
     if keyword:
         query = query.filter(ExportJob.filename.ilike(f"%{keyword}%"))
     if created_from:

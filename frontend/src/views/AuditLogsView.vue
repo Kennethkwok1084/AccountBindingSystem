@@ -166,6 +166,7 @@ async function exportLogs() {
       }),
     });
     exportState.value = {
+      id: payload.data.export_job.id,
       filename: payload.data.export_job.filename,
       rowCount: payload.data.export_job.row_count,
     };
@@ -175,7 +176,7 @@ async function exportLogs() {
 }
 
 function goToExports() {
-  router.push({ path: "/exports", query: { keyword: exportState.value?.filename || "" } });
+  router.push({ path: "/exports", query: { export_id: exportState.value?.id || "", keyword: exportState.value?.filename || "" } });
 }
 
 onMounted(load);

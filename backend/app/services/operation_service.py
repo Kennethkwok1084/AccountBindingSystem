@@ -37,9 +37,9 @@ from .account_service import allocatable_batch_condition
 from .config_service import get_config_value, set_config_value
 from .date_service import compute_expire_from, normalize_date, normalize_datetime, utcnow
 from .excel_service import validate_excel
-from .export_service import create_export
+from .export_service import create_charge_execution_export, create_export
 from .serialization_service import to_jsonable
-from .storage_service import save_upload
+from .storage_service import XLS_MAX_DATA_ROWS, save_upload
 
 
 MAX_IMPORT_ERRORS_PAGE_SIZE = 200
@@ -200,6 +200,7 @@ def _execute_charge_batch_inner(batch_id: int, idempotency_key: str):
         .filter_by(operation_batch_id=batch_id)
         .order_by(OperationBatchDetail.row_no.asc())
     ).scalars().all()
+    _ensure_charge_export_row_limit(details)
 
     success_count = 0
     fail_count = 0
@@ -249,7 +250,7 @@ def _execute_charge_batch_inner(batch_id: int, idempotency_key: str):
         },
     )
     db.session.commit()
-    export_job = _create_export_after_commit(operation_batch.id, export_rows)
+    export_job = _create_charge_execution_export_after_commit(operation_batch.id, export_rows)
     return operation_batch, export_job
 
 
@@ -1385,6 +1386,20 @@ def _create_export_after_commit(operation_batch_id: int, rows: list[dict]):
     export_job = create_export(operation_batch_id, rows)
     db.session.commit()
     return export_job
+
+
+def _create_charge_execution_export_after_commit(operation_batch_id: int, rows: list[dict]):
+    if not rows:
+        return None
+    export_job = create_charge_execution_export(operation_batch_id, rows)
+    db.session.commit()
+    return export_job
+
+
+def _ensure_charge_export_row_limit(details: list[OperationBatchDetail]) -> None:
+    export_row_count = sum(1 for detail in details if detail.action_plan in {"allocate", "rebind"})
+    if export_row_count > XLS_MAX_DATA_ROWS:
+        raise ValueError(f"收费清单执行导出最多支持 {XLS_MAX_DATA_ROWS} 行，请拆分后执行")
 
 
 def _jsonable(value):

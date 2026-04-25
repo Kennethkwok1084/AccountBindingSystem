@@ -211,6 +211,11 @@ def test_student_ledger_export_creates_excel_job(client, auth_headers):
     assert exports_response.json["data"]["total"] == 1
     assert exports_response.json["data"]["items"][0]["filename"] == response.json["data"]["export_job"]["filename"]
 
+    exports_by_id_response = client.get(f"/api/v1/exports?export_id={export_id}", headers=auth_headers)
+    assert exports_by_id_response.status_code == 200
+    assert exports_by_id_response.json["data"]["total"] == 1
+    assert exports_by_id_response.json["data"]["items"][0]["id"] == export_id
+
 
 def test_account_ledger_export_creates_excel_job(client, auth_headers):
     client.post(

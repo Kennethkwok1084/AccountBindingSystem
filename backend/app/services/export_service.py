@@ -9,13 +9,24 @@ from ..auth import current_user
 from ..extensions import db
 from ..models import ExportJob
 from ..services.audit_service import write_audit
-from ..services.storage_service import create_export_file, create_tabular_export_file
+from ..services.storage_service import (
+    create_charge_execution_export_file,
+    create_export_file,
+    create_tabular_export_file,
+)
 
 
 def create_export(operation_batch_id: int | None, rows: list[dict]) -> ExportJob | None:
     if not rows:
         return None
     filename, stored_path = create_export_file(rows)
+    return _create_export_job(operation_batch_id, filename, stored_path, len(rows))
+
+
+def create_charge_execution_export(operation_batch_id: int | None, rows: list[dict]) -> ExportJob | None:
+    if not rows:
+        return None
+    filename, stored_path = create_charge_execution_export_file(rows)
     return _create_export_job(operation_batch_id, filename, stored_path, len(rows))
 
 
