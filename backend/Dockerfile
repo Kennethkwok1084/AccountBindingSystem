@@ -9,6 +9,7 @@ COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY backend /app
+COPY 批量修改资料模版.xls /app/批量修改资料模版.xls
 
 EXPOSE 5000
 

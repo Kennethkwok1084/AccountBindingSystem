@@ -28,6 +28,7 @@ services:
       SECRET_KEY: ${ABS_SECRET_KEY:?ABS_SECRET_KEY is required}
       SESSION_COOKIE_SECURE: ${ABS_SESSION_COOKIE_SECURE:-true}
       STORAGE_ROOT: /app/storage
+      BATCH_MODIFY_TEMPLATE_PATH: ${ABS_BATCH_MODIFY_TEMPLATE_PATH:-/app/批量修改资料模版.xls}
       DEFAULT_ADMIN_USERNAME: ${ABS_ADMIN_USERNAME:-admin}
       DEFAULT_ADMIN_PASSWORD: ${ABS_ADMIN_PASSWORD:?ABS_ADMIN_PASSWORD is required}
       AUTH_MODE: ${ABS_AUTH_MODE:-local}
@@ -41,6 +42,7 @@ services:
         condition: service_healthy
     volumes:
       - backend_storage:/app/storage
+      - ./批量修改资料模版.xls:/app/批量修改资料模版.xls:ro
     command: >
       sh -c "flask --app wsgi:app init-db &&
              flask --app wsgi:app seed-admin &&
