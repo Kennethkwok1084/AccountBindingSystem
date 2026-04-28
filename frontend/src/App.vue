@@ -67,7 +67,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { logout } from "./services/auth";
+import { fetchAuthMode, logout } from "./services/auth";
 import zhCN from "ant-design-vue/es/locale/zh_CN";
 
 const route = useRoute();
@@ -120,8 +120,13 @@ function handleUnhandledRejection(event) {
 }
 
 async function handleLogout() {
+  const mode = await fetchAuthMode();
   await logout();
-  router.push("/login");
+  if (mode.local_login_enabled) {
+    router.push("/login");
+    return;
+  }
+  window.location.href = "/login";
 }
 
 onMounted(() => {

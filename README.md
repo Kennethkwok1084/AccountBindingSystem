@@ -92,6 +92,17 @@ docker compose exec backend flask --app wsgi:app seed-admin --password your_pass
 - 前端：`http://localhost:8080`
 - PostgreSQL：`localhost:5432`
 
+## 认证模式
+
+默认 `ABS_AUTH_MODE=local`，继续使用系统内置管理员账号密码登录。
+
+如果前面已经由雷池统一登录保护，可以改为：
+
+- `ABS_AUTH_MODE=disabled`：关闭本系统登录页，所有请求通过后端后使用 `ABS_AUTH_DISABLED_USERNAME` 作为内部审计用户。
+- `ABS_AUTH_MODE=proxy`：关闭本系统登录页，并从反向代理注入的请求头读取用户名。默认读取 `X-Remote-User,X-Forwarded-User,Remote-User,X-Auth-Request-User`，可用 `ABS_AUTH_PROXY_USER_HEADERS` 调整。
+
+`proxy` 模式下，后端会按统一登录用户名自动创建内部 `admin_user`，用于继续满足导入、导出、审计日志等外键关系。建议只允许雷池访问本系统 Nginx/Backend；如雷池可注入固定密钥头，可同时配置 `ABS_AUTH_PROXY_REQUIRED_SECRET_HEADER` 和 `ABS_AUTH_PROXY_REQUIRED_SECRET`，避免客户端伪造身份头。
+
 ## 测试
 
 ```bash

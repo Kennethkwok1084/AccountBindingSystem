@@ -9,9 +9,10 @@
 3. [数据模型与 API 约定](./data-model-and-api.md)
 4. [工程澄清与风险清单](./engineering-clarifications.md)
 5. [部署、运维与测试](./deployment-testing.md)
-6. [备份恢复演练记录](./backup-restore-drill.md)
-7. [上线前检查清单](./go-live-checklist.md)
-8. [完整深度研究报告](./deep-research-report.md)
+6. [雷池统一登录与本系统认证接入说明](./safeline-sso-auth.md)
+7. [备份恢复演练记录](./backup-restore-drill.md)
+8. [上线前检查清单](./go-live-checklist.md)
+9. [完整深度研究报告](./deep-research-report.md)
 
 ## 文档分工
 
@@ -22,6 +23,7 @@
 | `data-model-and-api.md` | 后端、数据库、联调 | 核心数据模型、表职责、关键约束、API 契约、Excel 契约 |
 | `engineering-clarifications.md` | 技术负责人、后端、测试 | 高风险设计点、推荐口径、并发测试重点 |
 | `deployment-testing.md` | 运维、测试、实施 | 部署拓扑、安全基线、备份恢复、测试计划、实施里程碑 |
+| `safeline-sso-auth.md` | 运维、实施、后端 | 雷池统一登录接入方式、认证模式、环境变量与安全要求 |
 | `backup-restore-drill.md` | 运维、实施、验收 | PostgreSQL 恢复演练记录模板与当前口径 |
 | `go-live-checklist.md` | 项目负责人、测试、运维 | 上线前核对项、责任归属、签收记录 |
 | `deep-research-report.md` | 项目负责人、架构师 | 全量论证、DDL 草案、接口示例、实施细节、背景依据 |

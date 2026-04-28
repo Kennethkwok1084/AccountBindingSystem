@@ -63,8 +63,9 @@ def test_import_accounts_and_charge_execute(client, auth_headers):
     assert export_job.filename.endswith(".xls")
     assert Path(export_job.stored_path).read_bytes()[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
     dataframe = pd.read_excel(export_job.stored_path)
-    assert list(dataframe.columns)[:2] == ["账号", "移动账户"]
+    assert list(dataframe.columns)[:2] == ["账号", "移动账号"]
     assert dataframe.iloc[0]["账号"] == 2023001001
+    assert dataframe.iloc[0]["移动账号"] == "yd0001"
 
 
 def test_charge_execute_rejects_xls_export_over_row_limit_before_writes(client, auth_headers, monkeypatch):
@@ -124,6 +125,50 @@ def test_charge_execute_rejects_xls_export_over_row_limit_before_writes(client, 
 
     assert execute.status_code == 409
     assert "收费清单执行导出最多支持 1 行" in execute.json["message"]
+    assert CurrentBinding.query.count() == 0
+    assert ExportJob.query.count() == 0
+
+
+def test_charge_execute_rejects_missing_batch_modify_template_before_writes(client, auth_headers, app):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={"file": (excel_file([{"account": "yd-template-001", "batch_code": "202604"}]), "accounts.xlsx")},
+        content_type="multipart/form-data",
+    )
+
+    preview = client.post(
+        "/api/v1/charge-batches/preview",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "student_no": "2023001201",
+                            "name": "模板校验",
+                            "charge_time": datetime(2026, 4, 20, 9, 0, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        },
+                    ]
+                ),
+                "charge.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    assert preview.status_code == 201
+
+    app.config["BATCH_MODIFY_TEMPLATE_PATH"] = str(Path(app.config["STORAGE_ROOT"]) / "missing-template.xls")
+    execute = client.post(
+        f"/api/v1/charge-batches/{preview.json['data']['operation_batch_id']}/execute",
+        headers={**auth_headers, "X-Idempotency-Key": "test-charge-missing-template"},
+        json={"confirm": True},
+    )
+
+    assert execute.status_code == 409
+    assert "批量修改资料模板不存在" in execute.json["message"]
     assert CurrentBinding.query.count() == 0
     assert ExportJob.query.count() == 0
 

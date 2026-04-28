@@ -10,7 +10,7 @@ from app.models import AccountBatch, BindingHistory, CurrentBinding, ExportJob, 
 from app.services.audit_service import write_audit
 from app.services.config_service import set_config_value
 from app.services.scheduler_service import run_binding_expire_release, run_cleanup_temp_files
-from app.services import syslog_service
+from app.services import operation_service, syslog_service
 from .conftest import excel_file
 
 
@@ -776,3 +776,90 @@ def test_batch_rebind_preview_and_execute_keep_target_accounts_unique(client, au
     assert rebound_accounts == {"yd6103", "yd6104"}
     assert MobileAccount.query.filter_by(account="yd6101").first().status == "expired"
     assert MobileAccount.query.filter_by(account="yd6102").first().status == "expired"
+
+
+def test_batch_rebind_rejects_xls_export_over_row_limit_before_writes(client, auth_headers, monkeypatch):
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {"account": "yd6201", "batch_code": "202604"},
+                        {"account": "yd6202", "batch_code": "202604"},
+                    ]
+                ),
+                "accounts-old.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    charge_preview = client.post(
+        "/api/v1/charge-batches/preview",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {
+                            "student_no": "2023006201",
+                            "name": "甲",
+                            "charge_time": datetime(2026, 4, 20, 9, 0, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        },
+                        {
+                            "student_no": "2023006202",
+                            "name": "乙",
+                            "charge_time": datetime(2026, 4, 20, 9, 1, 0),
+                            "package_name": "包月套餐",
+                            "fee_amount": 30,
+                        },
+                    ]
+                ),
+                "charge.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    charge_execute = client.post(
+        f"/api/v1/charge-batches/{charge_preview.json['data']['operation_batch_id']}/execute",
+        headers={**auth_headers, "X-Idempotency-Key": "batch-rebind-limit-seed"},
+        json={"confirm": True},
+    )
+    assert charge_execute.status_code == 200
+    client.post(
+        "/api/v1/mobile-accounts/import",
+        headers=auth_headers,
+        data={
+            "file": (
+                excel_file(
+                    [
+                        {"account": "yd6203", "batch_code": "202605"},
+                        {"account": "yd6204", "batch_code": "202605"},
+                    ]
+                ),
+                "accounts-new.xlsx",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    old_batch = AccountBatch.query.filter_by(batch_code="202604").first()
+    monkeypatch.setattr(operation_service, "XLS_MAX_DATA_ROWS", 1)
+    execute = client.post(
+        f"/api/v1/batch-rebinds/{old_batch.id}/execute",
+        headers={**auth_headers, "X-Idempotency-Key": "batch-rebind-limit-execute"},
+        json={"confirm": True},
+    )
+
+    assert execute.status_code == 409
+    assert "批量换绑导出最多支持 1 行" in execute.json["message"]
+    bindings = CurrentBinding.query.order_by(CurrentBinding.student_id.asc()).all()
+    bound_accounts = {db.session.get(MobileAccount, binding.mobile_account_id).account for binding in bindings}
+    assert bound_accounts == {"yd6201", "yd6202"}
+    assert MobileAccount.query.filter_by(account="yd6201").first().status == "assigned"
+    assert MobileAccount.query.filter_by(account="yd6202").first().status == "assigned"
+    assert MobileAccount.query.filter_by(account="yd6203").first().status == "available"
+    assert MobileAccount.query.filter_by(account="yd6204").first().status == "available"

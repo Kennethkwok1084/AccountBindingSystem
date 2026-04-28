@@ -39,7 +39,7 @@ from .date_service import compute_expire_from, normalize_date, normalize_datetim
 from .excel_service import validate_excel
 from .export_service import create_charge_execution_export, create_export
 from .serialization_service import to_jsonable
-from .storage_service import XLS_MAX_DATA_ROWS, save_upload
+from .storage_service import XLS_MAX_DATA_ROWS, save_upload, validate_batch_modify_template
 
 
 MAX_IMPORT_ERRORS_PAGE_SIZE = 200
@@ -201,6 +201,7 @@ def _execute_charge_batch_inner(batch_id: int, idempotency_key: str):
         .order_by(OperationBatchDetail.row_no.asc())
     ).scalars().all()
     _ensure_charge_export_row_limit(details)
+    _ensure_batch_modify_template_ready(details)
 
     success_count = 0
     fail_count = 0
@@ -550,6 +551,7 @@ def _manual_rebind_inner(student_no: str, old_account_action: str, remark: str |
     student = db.session.execute(select(Student).filter_by(student_no=student_no)).scalar_one_or_none()
     if student is None:
         raise LookupError("学号不存在")
+    _ensure_export_ready(1, "手动换绑")
 
     operation_batch = OperationBatch(
         batch_type="manual_rebind",
@@ -712,6 +714,17 @@ def _execute_batch_rebind_inner(batch_id: int, idempotency_key: str):
     if batch is None:
         raise LookupError("批次不存在")
 
+    affected = (
+        db.session.execute(
+            select(CurrentBinding, Student, MobileAccount)
+            .join(Student, Student.id == CurrentBinding.student_id)
+            .join(MobileAccount, MobileAccount.id == CurrentBinding.mobile_account_id)
+            .filter(MobileAccount.batch_id == batch.id)
+        )
+        .all()
+    )
+    _ensure_export_ready(len(affected), "批量换绑")
+
     operation_batch = OperationBatch(
         batch_type="batch_rebind",
         status="previewed",
@@ -724,15 +737,6 @@ def _execute_batch_rebind_inner(batch_id: int, idempotency_key: str):
     export_rows = []
     success_rows = 0
     failed_rows = 0
-    affected = (
-        db.session.execute(
-            select(CurrentBinding, Student, MobileAccount)
-            .join(Student, Student.id == CurrentBinding.student_id)
-            .join(MobileAccount, MobileAccount.id == CurrentBinding.mobile_account_id)
-            .filter(MobileAccount.batch_id == batch.id)
-        )
-        .all()
-    )
 
     for index, (binding, student, old_account) in enumerate(affected, start=1):
         detail = OperationBatchDetail(
@@ -1400,6 +1404,18 @@ def _ensure_charge_export_row_limit(details: list[OperationBatchDetail]) -> None
     export_row_count = sum(1 for detail in details if detail.action_plan in {"allocate", "rebind"})
     if export_row_count > XLS_MAX_DATA_ROWS:
         raise ValueError(f"收费清单执行导出最多支持 {XLS_MAX_DATA_ROWS} 行，请拆分后执行")
+
+
+def _ensure_batch_modify_template_ready(details: list[OperationBatchDetail]) -> None:
+    export_row_count = sum(1 for detail in details if detail.action_plan in {"allocate", "rebind"})
+    _ensure_export_ready(export_row_count, "收费清单执行")
+
+
+def _ensure_export_ready(export_row_count: int, operation_name: str) -> None:
+    if export_row_count > XLS_MAX_DATA_ROWS:
+        raise ValueError(f"{operation_name}导出最多支持 {XLS_MAX_DATA_ROWS} 行，请拆分后执行")
+    if export_row_count > 0:
+        validate_batch_modify_template()
 
 
 def _jsonable(value):

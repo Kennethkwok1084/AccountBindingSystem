@@ -1,4 +1,5 @@
 import pandas as pd
+import xlrd
 
 from datetime import datetime
 
@@ -30,25 +31,42 @@ def test_export_file_names_do_not_collide(app):
     filename2, path2 = create_export_file([{"学号": "2", "移动账户": "yd002"}])
 
     assert filename1 != filename2
-    assert filename1.endswith(".xlsx")
-    assert filename2.endswith(".xlsx")
+    assert filename1.endswith(".xls")
+    assert filename2.endswith(".xls")
 
     rows1 = pd.read_excel(path1).to_dict(orient="records")
     rows2 = pd.read_excel(path2).to_dict(orient="records")
-    assert rows1[0]["学号"] == 1
-    assert rows2[0]["学号"] == 2
+    assert rows1[0]["账号"] == 1
+    assert rows1[0]["移动账号"] == "yd001"
+    assert rows2[0]["账号"] == 2
+    assert rows2[0]["移动账号"] == "yd002"
 
 
-def test_charge_execution_export_uses_xls_suffix_and_account_header(app):
+def test_charge_execution_export_uses_batch_modify_template(app):
     filename, path = create_charge_execution_export_file([{"学号": "2023001001", "移动账户": "yd001"}])
 
     assert filename.endswith(".xls")
     assert open(path, "rb").read(8) == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    workbook = xlrd.open_workbook(path, formatting_info=True)
+    sheet = workbook.sheet_by_index(0)
+    assert workbook.sheet_names() == ["sheet1"]
+    assert [sheet.cell_value(0, column_index) for column_index in range(sheet.ncols)] == [
+        "账号",
+        "移动账号",
+        "移动密码",
+        "联通账号",
+        "联通密码",
+        "电信账号",
+        "电信密码",
+    ]
+    assert sheet.cell_type(1, 0) == xlrd.XL_CELL_TEXT
+    assert sheet.cell_type(1, 1) == xlrd.XL_CELL_TEXT
 
     dataframe = pd.read_excel(path)
-    assert list(dataframe.columns)[:2] == ["账号", "移动账户"]
+    assert list(dataframe.columns) == ["账号", "移动账号", "移动密码", "联通账号", "联通密码", "电信账号", "电信密码"]
     assert "学号" not in dataframe.columns
     assert dataframe.iloc[0]["账号"] == 2023001001
+    assert dataframe.iloc[0]["移动账号"] == "yd001"
 
 
 def test_tabular_export_file_defaults_to_xlsx(app):

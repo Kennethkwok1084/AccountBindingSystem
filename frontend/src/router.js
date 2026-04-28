@@ -14,7 +14,7 @@ import SettingsView from "./views/SettingsView.vue";
 import StudentLedgerView from "./views/StudentLedgerView.vue";
 import AccountLedgerView from "./views/AccountLedgerView.vue";
 import AuditLogsView from "./views/AuditLogsView.vue";
-import { fetchCurrentUser } from "./services/auth";
+import { fetchAuthMode, fetchCurrentUser } from "./services/auth";
 
 const routes = [
   { path: "/login", component: LoginView, meta: { public: true } },
@@ -43,12 +43,31 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   if (to.meta.public) {
+    if (to.path === "/login") {
+      try {
+        const mode = await fetchAuthMode();
+        if (!mode.local_login_enabled) {
+          await fetchCurrentUser();
+          return "/dashboard";
+        }
+      } catch (_error) {
+        return true;
+      }
+    }
     return true;
   }
   try {
     await fetchCurrentUser();
     return true;
   } catch (_error) {
+    try {
+      const mode = await fetchAuthMode();
+      if (!mode.local_login_enabled) {
+        return "/login";
+      }
+    } catch (_modeError) {
+      return "/login";
+    }
     return "/login";
   }
 });

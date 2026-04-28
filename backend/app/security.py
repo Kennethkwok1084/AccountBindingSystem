@@ -55,6 +55,10 @@ def generate_csrf_token() -> str:
     return token
 
 
+def get_or_create_csrf_token() -> str:
+    return session.get("csrf_token") or generate_csrf_token()
+
+
 def require_session(func):
     from .auth import current_user
     from .responses import error
