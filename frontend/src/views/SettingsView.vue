@@ -17,7 +17,7 @@
       </template>
     </a-alert>
 
-    <a-form layout="vertical" @finish="save">
+    <a-form layout="vertical" @submit.prevent>
       <a-card
         v-for="group in groupedEntries"
         :key="group.group"
@@ -42,7 +42,7 @@
       </a-card>
       <a-form-item>
         <a-space>
-          <a-button type="primary" html-type="submit">保存设置</a-button>
+          <a-button type="primary" :loading="saving" @click="save">保存设置</a-button>
           <a-button :loading="testingSyslog" @click="testSyslog">测试 Syslog 连通性</a-button>
         </a-space>
       </a-form-item>
@@ -57,6 +57,7 @@ import { apiFetch } from "../services/api";
 
 const form = reactive({});
 const metadata = ref({});
+const saving = ref(false);
 const testingSyslog = ref(false);
 const testResult = ref(null);
 
@@ -91,12 +92,19 @@ async function load() {
 }
 
 async function save() {
-  await apiFetch("/api/v1/config", {
-    method: "PUT",
-    body: JSON.stringify(form),
-  });
-  message.success("系统设置已更新");
-  await load();
+  saving.value = true;
+  try {
+    await apiFetch("/api/v1/config", {
+      method: "PUT",
+      body: JSON.stringify(form),
+    });
+    message.success("系统设置已更新");
+    await load();
+  } catch (error) {
+    message.error(error.message || "系统设置保存失败");
+  } finally {
+    saving.value = false;
+  }
 }
 
 async function testSyslog() {

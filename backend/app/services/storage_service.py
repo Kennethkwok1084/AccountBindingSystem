@@ -44,9 +44,10 @@ def save_upload(file: FileStorage, category: str) -> tuple[str, str]:
     if suffix not in ALLOWED_UPLOAD_SUFFIXES:
         raise ValueError("仅支持上传 .xlsx 或 .xls 文件")
 
-    storage_root = Path(current_app.config["STORAGE_ROOT"]) / "uploads" / category
+    month_folder = localnow().strftime("%Y-%m")
+    storage_root = Path(current_app.config["STORAGE_ROOT"]) / "uploads" / month_folder / category
     storage_root.mkdir(parents=True, exist_ok=True)
-    filename = secure_filename(file.filename or f"{category}.xlsx")
+    filename = secure_filename(file.filename or f"{category}{suffix}") or f"{category}{suffix}"
     stored_name = f"{utcnow():%Y%m%d%H%M%S}_{uuid4().hex[:8]}_{filename}"
     full_path = storage_root / stored_name
     file.save(full_path)

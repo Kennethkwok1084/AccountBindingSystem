@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime, time
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
-from flask import Blueprint, request, send_file
+from flask import Blueprint, after_this_request, request, send_file
 from sqlalchemy import asc, desc
 
 from ..extensions import db
 from ..models import ExportJob
-from ..responses import success
+from ..responses import error, success
 from ..security import require_session
 from ..services.audit_service import write_audit
 from ..services.export_service import export_download_path, mark_export_downloaded
+from ..services.upload_archive_service import MONTH_PATTERN, create_upload_archive, list_upload_archives
 
 
 bp = Blueprint("exports", __name__)
@@ -103,3 +105,34 @@ def download_export(export_id: int):
     db.session.commit()
     mark_export_downloaded(export_job)
     return send_file(Path(export_download_path(export_job)), as_attachment=True, download_name=export_job.filename)
+
+
+@bp.get("/upload-archives")
+@require_session
+def upload_archives():
+    return success({"items": list_upload_archives()})
+
+
+@bp.get("/upload-archives/<month>/download")
+@require_session
+def download_upload_archive(month: str):
+    if not MONTH_PATTERN.fullmatch(month):
+        return error("ARC400", "月份格式应为 YYYY-MM", status=400)
+
+    temp = NamedTemporaryFile(prefix=f"uploads-{month}-", suffix=".zip", delete=False)
+    temp_path = Path(temp.name)
+    temp.close()
+    file_count = create_upload_archive(month, temp_path)
+
+    if file_count == 0:
+        temp_path.unlink(missing_ok=True)
+        return error("ARC404", "该月份没有可打包的上传文件", status=404)
+
+    @after_this_request
+    def _cleanup(response):
+        temp_path.unlink(missing_ok=True)
+        return response
+
+    write_audit("download_upload_archive", "upload_archive", month, {"file_count": file_count})
+    db.session.commit()
+    return send_file(temp_path, as_attachment=True, download_name=f"上传文件归档-{month}.zip")
