@@ -6,6 +6,7 @@ from decimal import Decimal
 import random
 import threading
 
+from flask import current_app
 from sqlalchemy import select
 
 from ..auth import current_user
@@ -34,6 +35,7 @@ from .audit_service import (
 )
 import uuid as _uuid
 from .account_service import allocatable_batch_condition
+from .charge_record_service import start_charge_raw_archive_task
 from .config_service import get_config_value, set_config_value
 from .date_service import compute_expire_from, normalize_date, normalize_datetime, utcnow
 from .excel_service import validate_excel
@@ -56,9 +58,10 @@ class CandidateInfo:
 def preview_charge_batch(file):
     user = current_user()
     stored_path, checksum = save_upload(file, "charge_list")
+    original_filename = file.filename or "charge_list.xlsx"
     import_job = ImportJob(
         job_type="charge_list",
-        original_filename=file.filename or "charge_list.xlsx",
+        original_filename=original_filename,
         stored_path=stored_path,
         file_checksum=checksum,
         operator_id=user.id,
@@ -77,6 +80,7 @@ def preview_charge_batch(file):
         import_job.failed_rows = len(parse_result.issues)
         import_job.finished_at = utcnow()
         db.session.commit()
+        _start_charge_raw_archive_after_upload(stored_path, original_filename, checksum, user.id)
         return None, import_job
 
     last_processed = normalize_datetime(get_config_value("charge.last_processed_charge_time"))
@@ -183,7 +187,18 @@ def preview_charge_batch(file):
         decision={"action_counts": action_counts, "total_rows": len(rows), "parse_issues": len(parse_result.issues)},
     )
     db.session.commit()
+    _start_charge_raw_archive_after_upload(stored_path, original_filename, checksum, user.id)
     return operation_batch, import_job
+
+
+def _start_charge_raw_archive_after_upload(stored_path: str, original_filename: str, checksum: str, operator_id: int) -> None:
+    start_charge_raw_archive_task(
+        stored_path=stored_path,
+        original_filename=original_filename,
+        checksum=checksum,
+        operator_id=operator_id,
+        app=current_app._get_current_object(),
+    )
 
 
 def execute_charge_batch(batch_id: int, idempotency_key: str):

@@ -4,6 +4,7 @@ from .accounts import bp as accounts_bp
 from .alerts import bp as alerts_bp
 from .audit import bp as audit_bp
 from .auth import bp as auth_bp
+from .charge_records import bp as charge_records_bp
 from .config import bp as config_bp
 from .dashboard import bp as dashboard_bp
 from .exports import bp as exports_bp
@@ -19,6 +20,7 @@ def register_blueprints(app):
         config_bp,
         dashboard_bp,
         accounts_bp,
+        charge_records_bp,
         operations_bp,
         students_bp,
         exports_bp,

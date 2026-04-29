@@ -5,6 +5,7 @@ import AccountsImportView from "./views/AccountsImportView.vue";
 import AccountsView from "./views/AccountsView.vue";
 import BatchesView from "./views/BatchesView.vue";
 import ChargeBatchView from "./views/ChargeBatchView.vue";
+import ChargeArchiveView from "./views/ChargeArchiveView.vue";
 import ExportsView from "./views/ExportsView.vue";
 import FullStudentsView from "./views/FullStudentsView.vue";
 import ManualRebindView from "./views/ManualRebindView.vue";
@@ -24,6 +25,7 @@ const routes = [
   { path: "/accounts", component: AccountsView },
   { path: "/batches", component: BatchesView },
   { path: "/operations/charge-preview", component: ChargeBatchView },
+  { path: "/imports/charge-archive", component: ChargeArchiveView },
   { path: "/imports/full-list", component: FullStudentsView },
   { path: "/operations/manual-rebind", component: ManualRebindView },
   { path: "/operations/batch-rebind", component: BatchRebindView },

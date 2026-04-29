@@ -155,6 +155,26 @@ class ImportJobError(db.Model):
     raw_data: Mapped[dict] = mapped_column(db.JSON, nullable=False, default=dict)
 
 
+class ChargeRawRecord(TimestampMixin, db.Model):
+    __tablename__ = "charge_raw_record"
+    __table_args__ = (
+        Index("ix_charge_raw_record_charge_time", "parsed_charge_time"),
+        Index("ix_charge_raw_record_source_month", "source_month"),
+        Index("ix_charge_raw_record_import_job", "import_job_id"),
+        Index("ix_charge_raw_record_row_hash", "row_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    import_job_id: Mapped[int] = mapped_column(ForeignKey("import_job.id"), nullable=False)
+    row_no: Mapped[int] = mapped_column(nullable=False)
+    sheet_name: Mapped[str | None] = mapped_column(nullable=True)
+    source_month: Mapped[str | None] = mapped_column(nullable=True)
+    parsed_charge_time: Mapped[datetime | None] = mapped_column(DateTime)
+    raw_time_text: Mapped[str | None] = mapped_column(Text)
+    raw_data: Mapped[dict] = mapped_column(db.JSON, nullable=False, default=dict)
+    row_hash: Mapped[str] = mapped_column(nullable=False)
+
+
 class OperationBatch(TimestampMixin, db.Model):
     __tablename__ = "operation_batch"
 

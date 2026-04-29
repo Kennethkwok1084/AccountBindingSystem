@@ -20,6 +20,7 @@
             <a-menu-item key="/imports/account-pool" @click="router.push('/imports/account-pool')">账号导入</a-menu-item>
             <a-menu-item key="/imports/full-list" @click="router.push('/imports/full-list')">完整名单</a-menu-item>
             <a-menu-item key="/operations/charge-preview" @click="router.push('/operations/charge-preview')">收费清单</a-menu-item>
+            <a-menu-item key="/imports/charge-archive" @click="router.push('/imports/charge-archive')">收费归档</a-menu-item>
           </a-menu-item-group>
           <a-menu-item-group title="运营">
             <a-menu-item key="/operations/manual-rebind" @click="router.push('/operations/manual-rebind')">手动换绑</a-menu-item>

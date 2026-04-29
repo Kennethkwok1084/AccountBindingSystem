@@ -75,7 +75,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "${ABS_HTTP_PORT:-8080}:80"
+      - "${ABS_HTTP_PORT:-20220}:80"
     restart: unless-stopped
 
   auditor:
